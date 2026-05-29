@@ -28,3 +28,6 @@ bin/
 
 ### Mac OS ###
 .DS_Store
+### Python (PPT 생성 도구) ###
+.venv/
+__pycache__/
