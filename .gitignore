@@ -31,3 +31,6 @@ bin/
 ### Python (PPT 생성 도구) ###
 .venv/
 __pycache__/
+
+### Office 임시 잠금 파일 ###
+~$*

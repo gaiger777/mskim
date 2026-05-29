@@ -391,7 +391,7 @@ for pi, (subtitle, group) in enumerate(pages):
 # ---------------- Slide 6: 최종 5게임 ----------------
 s = add_slide()
 set_bg(s, WHITE)
-header(s, "최종 추천 5게임 (자동 필터링)")
+header(s, "최종 추천 5게임 (순위그룹 분포 가중 추출 · 고확률 필터)")
 def parse_games(path):
     out = []
     with open(path, encoding="utf-8") as f:
@@ -403,7 +403,16 @@ def parse_games(path):
     return out
 
 
+def parse_filter(path):
+    with open(path, encoding="utf-8") as f:
+        for ln in f:
+            if ln.strip().startswith("적용 필터"):
+                return ln.strip()
+    return "필터 조건"
+
+
 games = parse_games("out/result.txt")
+filter_line = parse_filter("out/result.txt")
 from pptx.enum.shapes import MSO_SHAPE
 top = Inches(1.45)
 rowh = Inches(1.02)
@@ -445,9 +454,11 @@ for i, (label, nums, meta) in enumerate(games):
         r.font.name = FONT
     textbox(s, Inches(7.6), y, Inches(5.3), ball_d, meta, 14, GRAY, True,
             PP_ALIGN.LEFT, MSO_ANCHOR.MIDDLE)
-textbox(s, Inches(0.6), Inches(6.75), Inches(12), Inches(0.5),
-        "필터 조건: 합 100~180 · 홀수 2~4개 · 저수(≤22) 2~4개 · 끝수 4종↑ · 소수·3배수 각 1↑",
-        12, RGBColor(0x99, 0x99, 0x99), False)
+textbox(s, Inches(0.6), Inches(6.55), Inches(12.2), Inches(0.4),
+        filter_line, 11, RGBColor(0x99, 0x99, 0x99), False)
+textbox(s, Inches(0.6), Inches(6.95), Inches(12.2), Inches(0.4),
+        "채택: 45개 전체에서 순위그룹 당첨확률 비례로 추출 → 적합도(분포 정렬도) 상위 5게임 (무작위 채택 제거)",
+        11, RGBColor(0x99, 0x99, 0x99), False)
 
 # ---------------- Slide 7: 면책 ----------------
 s = add_slide()

@@ -123,11 +123,16 @@ public class LottoPatternAnalyzer {
         }
 
         // 7. 최종 게임 조합 생성
-        List<Integer> recommendationPool = topNumbers.subList(0, Math.min(25, topNumbers.size()));
-        List<List<Integer>> finalGames = generateValidGames(recommendationPool, 5, latestDraw);
+        //  - 후보: 45개 전체를 '순위그룹 당첨확률'에 비례해 가중 추출 (상위 25개 하드컷 제거)
+        //  - 필터: 과거 당첨 이력의 중심 밀집구간(고확률)에서 임계값 자동 산출
+        //  - 채택: 통과 조합 중 적합도(분포 정렬도) 상위 5개 (무작위 채택 제거)
+        GameFilter filter = GameFilter.fromHistory(drawHistory);
+        List<List<Integer>> finalGames =
+                generateDistributionGames(topNumbers, finalScores, rankDistribution, filter, latestDraw, 5);
 
         System.out.println("----------------------------------------------------------");
-        System.out.println("⚙️ [최종 5게임 자동 필터링]");
+        System.out.println("⚙️ [최종 5게임 — 분포 가중 추출 + 고확률 필터 + 적합도 상위]");
+        System.out.println(filter.describe());
         System.out.println("----------------------------------------------------------");
         char gameLabel = 'A';
         for (List<Integer> game : finalGames) {
@@ -289,54 +294,174 @@ public class LottoPatternAnalyzer {
         return drawList;
     }
 
-    private static List<List<Integer>> generateValidGames(List<Integer> pool, int requiredGames, LottoDraw latestDraw) {
-        List<List<Integer>> validGames = new ArrayList<>();
-        if (pool.size() < 6) return validGames;
-        int attempts = 0;
+    // ── 게임 특성 추출기 (정렬된 6개 번호 기준) ──
+    private static int gameSum(List<Integer> g) { return g.stream().mapToInt(Integer::intValue).sum(); }
+    private static int gameOdd(List<Integer> g) { return (int) g.stream().filter(n -> n % 2 != 0).count(); }
+    private static int gameLow(List<Integer> g) { return (int) g.stream().filter(n -> n <= 22).count(); }
+    private static int gameLastDigitDistinct(List<Integer> g) { return (int) g.stream().map(n -> n % 10).distinct().count(); }
 
-        Set<List<Integer>> consecutivePairsFromLatestDraw = new HashSet<>();
-        int[] latestNums = latestDraw.nums;
-        for (int i = 0; i < latestNums.length - 1; i++) {
-            if (latestNums[i+1] == latestNums[i] + 1) {
-                consecutivePairsFromLatestDraw.add(Arrays.asList(latestNums[i], latestNums[i+1]));
-            }
-        }
-
-        while (validGames.size() < requiredGames && attempts < 100000) {
-            attempts++;
-            Collections.shuffle(pool);
-            List<Integer> candidate = new ArrayList<>(pool.subList(0, 6));
-            Collections.sort(candidate);
-
-            int sum = candidate.stream().mapToInt(Integer::intValue).sum();
-            long oddCount = candidate.stream().filter(n -> n % 2 != 0).count();
-            long primeCount = candidate.stream().filter(PRIMES::contains).count();
-            long multiplesOf3Count = candidate.stream().filter(MULTIPLES_OF_3::contains).count();
-            long lowCount = candidate.stream().filter(n -> n <= 22).count();
-            long lastDigitDistinct = candidate.stream().map(n -> n % 10).distinct().count();
-
-            if (!(sum >= 100 && sum <= 180 && oddCount >= 2 && oddCount <= 4 && primeCount >= 1 && multiplesOf3Count >= 1
-                    && lowCount >= 2 && lowCount <= 4 && lastDigitDistinct >= 4)) {
-                continue;
-            }
-
-            if (containsConsecutiveCarryOver(candidate, consecutivePairsFromLatestDraw)) {
-                continue;
-            }
-
-            if (!validGames.contains(candidate)) {
-                validGames.add(candidate);
-            }
-        }
-        return validGames;
+    private static int gameConsecutivePairs(List<Integer> g) {
+        List<Integer> s = new ArrayList<>(g); Collections.sort(s);
+        int c = 0;
+        for (int i = 0; i < s.size() - 1; i++) if (s.get(i + 1) == s.get(i) + 1) c++;
+        return c;
     }
 
-    private static boolean containsConsecutiveCarryOver(List<Integer> candidate, Set<List<Integer>> consecutivePairsFromLatestDraw) {
-        for (List<Integer> pair : consecutivePairsFromLatestDraw) {
-            if (candidate.contains(pair.get(0)) && candidate.contains(pair.get(1))) {
-                return true;
-            }
+    // AC값(Arithmetic Complexity): 모든 쌍의 차이 중 서로 다른 값의 개수 - (n-1)
+    private static int gameAC(List<Integer> g) {
+        Set<Integer> diffs = new HashSet<>();
+        for (int i = 0; i < g.size(); i++)
+            for (int j = i + 1; j < g.size(); j++)
+                diffs.add(Math.abs(g.get(i) - g.get(j)));
+        return diffs.size() - (g.size() - 1);
+    }
+
+    // 과거 당첨 이력의 특성 분포에서 중심 밀집구간(백분위)으로 고확률 필터 임계값을 산출.
+    static class GameFilter {
+        int sumLo, sumHi, oddLo, oddHi, lowLo, lowHi, consLo, consHi, acLo, acHi, ldLo;
+
+        // 정수 메트릭 값들의 [pLow, pHigh] 백분위 경계 (양끝 trim)
+        private static int[] band(List<Integer> vals, double pLow, double pHigh) {
+            List<Integer> v = new ArrayList<>(vals); Collections.sort(v);
+            int n = v.size();
+            int lo = v.get(Math.min(n - 1, (int) Math.floor(pLow * (n - 1))));
+            int hi = v.get(Math.min(n - 1, (int) Math.ceil(pHigh * (n - 1))));
+            return new int[]{lo, hi};
         }
+
+        static GameFilter fromHistory(List<LottoDraw> history) {
+            List<Integer> sums = new ArrayList<>(), odds = new ArrayList<>(), lows = new ArrayList<>(),
+                    cons = new ArrayList<>(), acs = new ArrayList<>(), lds = new ArrayList<>();
+            for (LottoDraw d : history) {
+                List<Integer> g = new ArrayList<>();
+                for (int x : d.nums) g.add(x);
+                sums.add(gameSum(g)); odds.add(gameOdd(g)); lows.add(gameLow(g));
+                cons.add(gameConsecutivePairs(g)); acs.add(gameAC(g)); lds.add(gameLastDigitDistinct(g));
+            }
+            GameFilter f = new GameFilter();
+            // 합계·AC는 중심 80%(p10~p90), 이산 비율 메트릭은 중심 90%(p5~p95)로 채택
+            int[] b;
+            b = band(sums, 0.10, 0.90); f.sumLo = b[0]; f.sumHi = b[1];
+            b = band(odds, 0.05, 0.95); f.oddLo = b[0]; f.oddHi = b[1];
+            b = band(lows, 0.05, 0.95); f.lowLo = b[0]; f.lowHi = b[1];
+            b = band(cons, 0.00, 0.90); f.consLo = b[0]; f.consHi = b[1]; // 연속쌍은 0부터 허용, 상단만 컷
+            b = band(acs, 0.10, 1.00); f.acLo = b[0]; f.acHi = b[1];      // AC는 하한이 핵심(낮을수록 비당첨형)
+            b = band(lds, 0.10, 1.00); f.ldLo = b[0];                     // 끝수 종류는 하한만
+            return f;
+        }
+
+        boolean passes(List<Integer> g) {
+            int s = gameSum(g), od = gameOdd(g), lo = gameLow(g),
+                cn = gameConsecutivePairs(g), ac = gameAC(g), ld = gameLastDigitDistinct(g);
+            return s >= sumLo && s <= sumHi
+                    && od >= oddLo && od <= oddHi
+                    && lo >= lowLo && lo <= lowHi
+                    && cn >= consLo && cn <= consHi
+                    && ac >= acLo && ac <= acHi
+                    && ld >= ldLo;
+        }
+
+        String describe() {
+            return String.format(
+                "적용 필터(이력 기반 고확률): 합계 %d~%d · 홀수 %d~%d개 · 저수(≤22) %d~%d개 · 연속쌍 %d~%d · AC %d~%d · 끝수 %d종↑",
+                sumLo, sumHi, oddLo, oddHi, lowLo, lowHi, consLo, consHi, acLo, acHi, ldLo);
+        }
+    }
+
+    // 분포 비례 가중 추출 + 고확률 필터 + 적합도 상위 채택으로 게임을 생성한다.
+    //  rankedNumbers: 종합점수 순위(index0=1위). finalScores: 제외수(veto) 판정용.
+    //  rankDistribution: 순위그룹별 당첨확률. filter: 이력 기반 고확률 필터.
+    private static List<List<Integer>> generateDistributionGames(
+            List<Integer> rankedNumbers, Map<Integer, Double> finalScores,
+            Map<String, Double> rankDistribution, GameFilter filter,
+            LottoDraw latestDraw, int requiredGames) {
+
+        // 1) 번호별 추출 가중치 = 소속 순위그룹의 당첨확률 (그룹당 5개가 공유). 제외수(veto)는 0.
+        double[] weight = new double[46];
+        for (int rank = 1; rank <= rankedNumbers.size(); rank++) {
+            int n = rankedNumbers.get(rank - 1);
+            String g = getRankGroupFromRank(rank);
+            double p = (g == null) ? 0 : rankDistribution.getOrDefault(g, 0.0);
+            boolean vetoed = finalScores.getOrDefault(n, 0.0) <= -1000;
+            weight[n] = vetoed ? 0.0 : p; // 그룹 내 균등 추출이므로 그룹확률을 그대로 사용
+        }
+
+        // 직전 회차 연속쌍(이월) 회피 집합
+        Set<List<Integer>> latestConsecutive = new HashSet<>();
+        int[] ln = latestDraw.nums;
+        for (int i = 0; i < ln.length - 1; i++)
+            if (ln[i + 1] == ln[i] + 1) latestConsecutive.add(Arrays.asList(ln[i], ln[i + 1]));
+
+        // 2) 가중 추출로 후보를 모아 필터 통과분만 수집 (충분히 모이거나 시도 소진까지)
+        Random rnd = new Random();
+        Map<List<Integer>, Double> candidates = new HashMap<>(); // 조합 → 적합도
+        int attempts = 0;
+        while (candidates.size() < 2000 && attempts < 300000) {
+            attempts++;
+            List<Integer> game = weightedSampleWithoutReplacement(weight, 6, rnd);
+            if (game == null) break; // 추출 가능한 번호가 6개 미만
+            Collections.sort(game);
+            if (!filter.passes(game)) continue;
+            if (containsConsecutivePair(game, latestConsecutive)) continue;
+            candidates.putIfAbsent(game, fitness(game, rankedNumbers, rankDistribution));
+        }
+
+        // 3) 적합도 내림차순 정렬 후, 서로 2개 이상 다른 게임만 골라 상위 requiredGames개 채택
+        List<List<Integer>> sorted = new ArrayList<>(candidates.keySet());
+        sorted.sort((a, b) -> Double.compare(candidates.get(b), candidates.get(a)));
+        List<List<Integer>> picked = new ArrayList<>();
+        for (List<Integer> g : sorted) {
+            if (picked.size() >= requiredGames) break;
+            boolean tooSimilar = false;
+            for (List<Integer> p : picked) if (overlapCount(g, p) >= 5) { tooSimilar = true; break; }
+            if (!tooSimilar) picked.add(g);
+        }
+        // 다양성 제약으로 모자라면 적합도 순으로 채움
+        for (List<Integer> g : sorted) {
+            if (picked.size() >= requiredGames) break;
+            if (!picked.contains(g)) picked.add(g);
+        }
+        return picked;
+    }
+
+    // 적합도 = 6개 번호가 속한 순위그룹 당첨확률의 합 (분포 정렬도가 높을수록 큼)
+    private static double fitness(List<Integer> game, List<Integer> rankedNumbers, Map<String, Double> rankDistribution) {
+        double f = 0;
+        for (int n : game) {
+            int rank = rankedNumbers.indexOf(n) + 1;
+            String g = getRankGroupFromRank(rank);
+            if (g != null) f += rankDistribution.getOrDefault(g, 0.0);
+        }
+        return f;
+    }
+
+    // weight[n]>0 인 번호들에서 가중치 비례·비복원으로 k개 추출. 가능 번호가 k개 미만이면 null.
+    private static List<Integer> weightedSampleWithoutReplacement(double[] weight, int k, Random rnd) {
+        List<Integer> remaining = new ArrayList<>();
+        for (int n = 1; n <= 45; n++) if (weight[n] > 0) remaining.add(n);
+        if (remaining.size() < k) return null;
+        List<Integer> picked = new ArrayList<>();
+        for (int s = 0; s < k; s++) {
+            double total = 0;
+            for (int n : remaining) total += weight[n];
+            double r = rnd.nextDouble() * total, acc = 0;
+            int chosen = remaining.get(remaining.size() - 1);
+            for (int n : remaining) { acc += weight[n]; if (acc >= r) { chosen = n; break; } }
+            picked.add(chosen);
+            remaining.remove((Integer) chosen);
+        }
+        return picked;
+    }
+
+    private static int overlapCount(List<Integer> a, List<Integer> b) {
+        int c = 0;
+        for (int n : a) if (b.contains(n)) c++;
+        return c;
+    }
+
+    private static boolean containsConsecutivePair(List<Integer> candidate, Set<List<Integer>> pairs) {
+        for (List<Integer> pair : pairs)
+            if (candidate.contains(pair.get(0)) && candidate.contains(pair.get(1))) return true;
         return false;
     }
 
