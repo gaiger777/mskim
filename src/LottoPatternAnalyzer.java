@@ -27,6 +27,7 @@ public class LottoPatternAnalyzer {
     static final Set<Integer> MULTIPLES_OF_3 = new HashSet<>();
     static final Set<Integer> MULTIPLES_OF_5 = new HashSet<>();
     static final double BASELINE = 6.0 / 45.0; // 무작위 기대 적중률 (13.33%)
+    static final int WF_TRAIN_WEEKS = 50; // walk-forward 가중치 학습 창 (라이브 추천 = 검증과 동일 방식)
 
     static {
         for (int i = 3; i <= 45; i += 3) MULTIPLES_OF_3.add(i);
@@ -86,10 +87,13 @@ public class LottoPatternAnalyzer {
         // 적용 전/후 효과 비교 (상위 추천에 실제 당첨 번호가 얼마나 몰리는지)
         evaluateImprovement(drawHistory, 15, accuracyMap, rankDistribution, bestGroup, worstGroup);
 
+        // 라이브 추천 가중치: 검증(walk-forward)과 동일하게 과거 데이터(최근 50주)로만 학습
+        Map<String, Double> liveWeights = computeAccuracyWeights(drawHistory, WF_TRAIN_WEEKS);
+
         Map<Integer, List<String>> scoreTags = new HashMap<>();
         for (int n = 1; n <= 45; n++) scoreTags.put(n, new ArrayList<>());
         Map<Integer, Double> rawScores =
-                computeFinalScores(currentAnalyzers, drawHistory, latestDraw, accuracyMap, scoreTags);
+                computeFinalScores(currentAnalyzers, drawHistory, latestDraw, liveWeights, scoreTags);
         // 순위그룹 보정: 전체 점수 확정 후 2차 패스에서 적용 (기존 main의 순위 계산 버그 수정)
         final Map<Integer, Double> finalScores = applyRankBoost(rawScores, rankDistribution, bestGroup, worstGroup);
 
@@ -503,7 +507,7 @@ public class LottoPatternAnalyzer {
             Map<String, Double> accuracyWeights, Map<String, Double> rankDistribution,
             String bestGroup, String worstGroup) {
 
-        final int trainWeeks = 50; // walk-forward 재학습 창
+        final int trainWeeks = WF_TRAIN_WEEKS; // walk-forward 재학습 창 (라이브 추천과 동일)
         int startIdx = Math.max(1, drawHistory.size() - recentWeeks);
         String[] labels = {"기존(무가중 합산)", "신규(in-sample 가중)", "신규+순위그룹보정", "신규(walk-forward)"};
         double[] sum6 = new double[4];
