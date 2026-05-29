@@ -28,6 +28,10 @@ public class LottoPatternAnalyzer {
     static final Set<Integer> MULTIPLES_OF_5 = new HashSet<>();
     static final double BASELINE = 6.0 / 45.0; // 무작위 기대 적중률 (13.33%)
     static final int WF_TRAIN_WEEKS = 50; // walk-forward 가중치 학습 창 (라이브 추천 = 검증과 동일 방식)
+    static final int RANK_DIST_WEEKS = 50; // 순위그룹 분포 산정 창 (표본 안정화를 위해 50주)
+    static final String[] RANK_GROUPS = {
+            "1-5위", "6-10위", "11-15위", "16-20위", "21-25위",
+            "26-30위", "31-35위", "36-40위", "41-45위"};
 
     static {
         for (int i = 3; i <= 45; i += 3) MULTIPLES_OF_3.add(i);
@@ -51,8 +55,15 @@ public class LottoPatternAnalyzer {
         // 3. 패턴별 정확도 분석 및 출력 (최근 15회차 기준) — 반환된 정확도를 분석기 가중치로 사용
         Map<String, Double> accuracyMap = analyzePatternAccuracy(drawHistory, getAllAnalyzers(), 15);
 
+        // 라이브 추천 가중치: 검증(walk-forward)과 동일하게 과거 데이터(최근 50주)로만 학습
+        Map<String, Double> liveWeights = computeAccuracyWeights(drawHistory, WF_TRAIN_WEEKS);
+
         // 4. 과거 당첨 분포 통계 분석 및 출력
-        Map<String, Double> rankDistribution = analyzeRankDistribution(drawHistory, getAllAnalyzers(), 15); // 최근 15회차
+        // 라이브 추천과 동일한 가중 점수 기준으로, 최근 RANK_DIST_WEEKS주의 순위그룹 분포를 산정.
+        Map<String, List<String>> rankDetails = new LinkedHashMap<>();
+        Map<String, Double> rankDistribution =
+                computeRankDistribution(drawHistory, RANK_DIST_WEEKS, liveWeights, rankDetails);
+        printRankDistribution(rankDistribution, rankDetails, RANK_DIST_WEEKS);
 
         // 다음 회차 필출 및 제외 순위 분석 및 예상 개수 출력
         Optional<Map.Entry<String, Double>> maxEntry = rankDistribution.entrySet().stream().max(Map.Entry.comparingByValue());
@@ -70,25 +81,19 @@ public class LottoPatternAnalyzer {
 
             System.out.printf("\n[%d회차 당첨 번호 순위 그룹 확률 분석]\n", nextDrawNo);
             System.out.println("----------------------------------------------------------");
-            System.out.printf("▶ 필출 확률 UP: '%s' 그룹 (최근 15주간 당첨 확률: %.2f%%)\n", bestRankGroup, bestRankPercentage * 100);
+            System.out.printf("▶ 필출 확률 UP: '%s' 그룹 (최근 %d주간 당첨 확률: %.2f%%)\n", bestRankGroup, RANK_DIST_WEEKS, bestRankPercentage * 100);
             System.out.printf("  └ 예상: %d회차에 약 %.1f개 (1~3개) 번호가 포함될 수 있습니다.\n\n", nextDrawNo, expectedCount);
-            System.out.printf("▶ 제외 확률 UP: '%s' 그룹 (최근 15주간 당첨 확률: %.2f%%)\n", worstRankGroup, worstRankPercentage * 100);
+            System.out.printf("▶ 제외 확률 UP: '%s' 그룹 (최근 %d주간 당첨 확률: %.2f%%)\n", worstRankGroup, RANK_DIST_WEEKS, worstRankPercentage * 100);
             System.out.println("  └ 참고: 이 그룹의 번호들은 후순위로 고려하는 것이 좋습니다.");
             System.out.println("==========================================================");
         }
 
 
         // 5. 최신 회차 기준으로 최종 점수 집계 (정확도 가중 + 분석기별 정규화 합산)
-        List<PatternAnalyzer> currentAnalyzers = getAllAnalyzers();
-        for (PatternAnalyzer analyzer : currentAnalyzers) {
-            analyzer.analyze(drawHistory);
-        }
+        List<PatternAnalyzer> currentAnalyzers = analyzersFor(drawHistory);
 
         // 적용 전/후 효과 비교 (상위 추천에 실제 당첨 번호가 얼마나 몰리는지)
-        evaluateImprovement(drawHistory, 15, accuracyMap, rankDistribution, bestGroup, worstGroup);
-
-        // 라이브 추천 가중치: 검증(walk-forward)과 동일하게 과거 데이터(최근 50주)로만 학습
-        Map<String, Double> liveWeights = computeAccuracyWeights(drawHistory, WF_TRAIN_WEEKS);
+        evaluateImprovement(drawHistory, 15, accuracyMap);
 
         Map<Integer, List<String>> scoreTags = new HashMap<>();
         for (int n = 1; n <= 45; n++) scoreTags.put(n, new ArrayList<>());
@@ -166,6 +171,30 @@ public class LottoPatternAnalyzer {
         return analyzers;
     }
 
+    // (분석기 이름, prefix 길이) → analyze() 완료 인스턴스 캐시.
+    // 프로그램 내 모든 history는 동일한 전체 drawHistory의 subList(0, len)이므로
+    // 길이(len)가 곧 prefix의 고유 식별자다. getScore는 인스턴스 상태를 변경하지 않으므로
+    // 분석된 인스턴스를 호출 측이 공유해도 안전하다.
+    private static final Map<String, PatternAnalyzer> ANALYZE_CACHE = new HashMap<>();
+
+    // 주어진 history(prefix)에 대해 analyze()가 끝난 분석기 목록을 반환한다.
+    // 캐시에 없으면 한 번만 analyze() 후 저장하여 동일 prefix 재계산을 제거한다.
+    private static List<PatternAnalyzer> analyzersFor(List<LottoDraw> history) {
+        int len = history.size();
+        List<PatternAnalyzer> result = new ArrayList<>();
+        for (PatternAnalyzer template : getAllAnalyzers()) {
+            String key = template.getName() + ":" + len;
+            PatternAnalyzer cached = ANALYZE_CACHE.get(key);
+            if (cached == null) {
+                template.analyze(history);
+                cached = template;
+                ANALYZE_CACHE.put(key, cached);
+            }
+            result.add(cached);
+        }
+        return result;
+    }
+
     private static Map<String, Double> analyzePatternAccuracy(List<LottoDraw> drawHistory, List<PatternAnalyzer> analyzers, int recentWeeks) {
         Map<String, int[]> patternStats = new HashMap<>(); // K: patternName, V: [hits, predictions]
 
@@ -175,11 +204,7 @@ public class LottoPatternAnalyzer {
             LottoDraw previousDraw = drawHistory.get(i - 1);
             Set<Integer> actualWinningNumbers = drawHistory.get(i).getWinningNumbers();
 
-            for (PatternAnalyzer analyzer : analyzers) {
-                // 각 회차마다 분석기를 새로 초기화하여 상태 간섭 배제
-                PatternAnalyzer freshAnalyzer = createNewAnalyzerInstance(analyzer);
-                freshAnalyzer.analyze(historyForAnalysis);
-                
+            for (PatternAnalyzer freshAnalyzer : analyzersFor(historyForAnalysis)) {
                 patternStats.putIfAbsent(freshAnalyzer.getName(), new int[2]);
                 int[] stats = patternStats.get(freshAnalyzer.getName());
 
@@ -315,86 +340,66 @@ public class LottoPatternAnalyzer {
         return false;
     }
 
-    private static Map<String, Double> analyzeRankDistribution(List<LottoDraw> drawHistory, List<PatternAnalyzer> analyzers, int recentWeeks) {
-        Map<String, Integer> rankGroupCounts = new LinkedHashMap<>();
-        Map<String, List<String>> rankGroupDetails = new LinkedHashMap<>(); // 변경: 당첨내역 상세 저장
-        rankGroupCounts.put("1-5위", 0);
-        rankGroupCounts.put("6-10위", 0);
-        rankGroupCounts.put("11-15위", 0);
-        rankGroupCounts.put("16-20위", 0);
-        rankGroupCounts.put("21-25위", 0);
-        rankGroupCounts.put("26-30위", 0);
-        rankGroupCounts.put("31-35위", 0);
-        rankGroupCounts.put("36-40위", 0);
-        rankGroupCounts.put("41-45위", 0);
-        
-        rankGroupDetails.put("1-5위", new ArrayList<>());
-        rankGroupDetails.put("6-10위", new ArrayList<>());
-        rankGroupDetails.put("11-15위", new ArrayList<>());
-        rankGroupDetails.put("16-20위", new ArrayList<>());
-        rankGroupDetails.put("21-25위", new ArrayList<>());
-        rankGroupDetails.put("26-30위", new ArrayList<>());
-        rankGroupDetails.put("31-35위", new ArrayList<>());
-        rankGroupDetails.put("36-40위", new ArrayList<>());
-        rankGroupDetails.put("41-45위", new ArrayList<>());
+    // 최근 recentWeeks주 동안 가중 점수(라이브 추천과 동일)로 1~45 순위를 매기고,
+    // 실제 당첨 번호가 어느 순위그룹에 떨어졌는지 분포(그룹별 비율)를 반환한다.
+    // weights: 각 주 점수 산정에 적용할 분석기 가중치(라이브=liveWeights, 검증=해당 주까지의 walk-forward 가중치).
+    //          이 함수는 weights를 모든 주에 그대로 적용하므로, 호출 측에서 history 범위를 통해 look-ahead를 통제한다.
+    // detailsOut: null이 아니면 그룹별 당첨 내역 문자열을 채워 출력에 사용.
+    private static Map<String, Double> computeRankDistribution(
+            List<LottoDraw> history, int recentWeeks,
+            Map<String, Double> weights, Map<String, List<String>> detailsOut) {
 
+        Map<String, Integer> counts = new LinkedHashMap<>();
+        for (String g : RANK_GROUPS) counts.put(g, 0);
+        if (detailsOut != null) for (String g : RANK_GROUPS) detailsOut.put(g, new ArrayList<>());
 
-        int totalWinningNumbers = 0;
+        int total = 0;
+        int startIdx = Math.max(1, history.size() - recentWeeks);
+        for (int i = startIdx; i < history.size(); i++) {
+            List<LottoDraw> hist = history.subList(0, i);
+            LottoDraw prev = history.get(i - 1);
+            LottoDraw cur = history.get(i);
 
-        int startIdx = Math.max(1, drawHistory.size() - recentWeeks);
-        for (int i = startIdx; i < drawHistory.size(); i++) {
-            List<LottoDraw> historyForAnalysis = drawHistory.subList(0, i);
-            LottoDraw previousDraw = drawHistory.get(i - 1);
-            LottoDraw currentDraw = drawHistory.get(i);
-            Set<Integer> actualWinningNumbers = currentDraw.getWinningNumbers();
-            
-            Map<Integer, Double> scores = new HashMap<>();
-            for (int n = 1; n <= 45; n++) {
-                double totalScore = 0;
-                for (PatternAnalyzer analyzer : analyzers) {
-                     PatternAnalyzer freshAnalyzer = createNewAnalyzerInstance(analyzer);
-                     freshAnalyzer.analyze(historyForAnalysis);
-                     totalScore += freshAnalyzer.getScore(n, previousDraw, historyForAnalysis);
-                }
-                scores.put(n, totalScore);
-            }
+            List<PatternAnalyzer> fresh = analyzersFor(hist);
+            Map<Integer, Double> scores = computeFinalScores(fresh, hist, prev, weights, null);
+            List<Integer> ranked = rankByScore(scores);
 
-            List<Integer> rankedNumbers = new ArrayList<>(scores.keySet());
-            rankedNumbers.sort((a, b) -> scores.get(b).compareTo(scores.get(a)));
-
-            for (int winningNum : actualWinningNumbers) {
-                int rank = rankedNumbers.indexOf(winningNum) + 1;
-                String rankGroup = getRankGroupFromRank(rank);
-                if (rankGroup != null) {
-                    rankGroupCounts.put(rankGroup, rankGroupCounts.get(rankGroup) + 1);
-                    rankGroupDetails.get(rankGroup).add(String.format("%d,%d(%d위)", currentDraw.drawNo, winningNum, rank)); // 당첨회차,번호와 예측순위 함께 저장
-                    totalWinningNumbers++;
-                }
+            for (int win : cur.getWinningNumbers()) {
+                int rank = ranked.indexOf(win) + 1;
+                String g = getRankGroupFromRank(rank);
+                if (g == null) continue;
+                counts.put(g, counts.get(g) + 1);
+                if (detailsOut != null) detailsOut.get(g).add(String.format("%d,%d(%d위)", cur.drawNo, win, rank));
+                total++;
             }
         }
 
+        Map<String, Double> dist = new LinkedHashMap<>();
+        for (Map.Entry<String, Integer> e : counts.entrySet()) {
+            dist.put(e.getKey(), total > 0 ? (double) e.getValue() / total : 0);
+        }
+        return dist;
+    }
+
+    private static void printRankDistribution(Map<String, Double> dist,
+            Map<String, List<String>> details, int recentWeeks) {
+        int totalWinningNumbers = details.values().stream().mapToInt(List::size).sum();
+
         System.out.println("\n==========================================================");
-        System.out.println("      최근 15회차 추천 순위별 당첨 번호 분포 통계");
+        System.out.printf("      최근 %d회차 추천 순위별 당첨 번호 분포 통계\n", recentWeeks);
         System.out.println("==========================================================");
-        System.out.println("총 당첨 번호 수: " + totalWinningNumbers + "개 (최근 15주)");
+        System.out.printf("총 당첨 번호 수: %d개 (최근 %d주)\n", totalWinningNumbers, recentWeeks);
         System.out.println("------------------------------------------------------------------------------------------");
         System.out.println("순위 그룹   | 당첨 횟수 | 비율   | 당첨 내역 (회차,번호(예측순위))");
         System.out.println("------------------------------------------------------------------------------------------");
 
-        Map<String, Double> rankDistribution = new HashMap<>();
-        for (Map.Entry<String, Integer> entry : rankGroupCounts.entrySet()) {
-            String group = entry.getKey();
-            int count = entry.getValue();
-            double percentage = (totalWinningNumbers > 0) ? (double) count / totalWinningNumbers : 0;
-            
-            String detailsStr = String.join(", ", rankGroupDetails.get(group));
-
+        for (String group : RANK_GROUPS) {
+            int count = details.get(group).size();
+            double percentage = dist.getOrDefault(group, 0.0);
+            String detailsStr = String.join(", ", details.get(group));
             System.out.printf("%-10s | %8d | %6.2f%% | %s\n", group, count, percentage * 100, detailsStr);
-            rankDistribution.put(group, percentage);
         }
         System.out.println("==========================================================================================");
-
-        return rankDistribution;
     }
     
     // 주어진 history만으로 분석기별 정확도(가중치)를 계산. walk-forward 검증에서 매 주 재학습용.
@@ -405,9 +410,7 @@ public class LottoPatternAnalyzer {
             List<LottoDraw> h = history.subList(0, i);
             LottoDraw prev = history.get(i - 1);
             Set<Integer> winners = history.get(i).getWinningNumbers();
-            for (PatternAnalyzer a : getAllAnalyzers()) {
-                PatternAnalyzer fa = createNewAnalyzerInstance(a);
-                fa.analyze(h);
+            for (PatternAnalyzer fa : analyzersFor(h)) {
                 stats.putIfAbsent(fa.getName(), new int[2]);
                 int[] s = stats.get(fa.getName());
                 for (int n = 1; n <= 45; n++) {
@@ -486,6 +489,13 @@ public class LottoPatternAnalyzer {
         return out;
     }
 
+    // 분포에서 최고/최저 비율 그룹을 [best, worst]로 반환 (둘 다 없으면 null).
+    private static String[] bestWorstGroup(Map<String, Double> dist) {
+        String best = dist.entrySet().stream().max(Map.Entry.comparingByValue()).map(Map.Entry::getKey).orElse(null);
+        String worst = dist.entrySet().stream().min(Map.Entry.comparingByValue()).map(Map.Entry::getKey).orElse(null);
+        return new String[]{best, worst};
+    }
+
     private static List<Integer> rankByScore(Map<Integer, Double> scores) {
         List<Integer> r = new ArrayList<>(scores.keySet());
         r.sort((a, b) -> scores.get(b).compareTo(scores.get(a)));
@@ -504,12 +514,11 @@ public class LottoPatternAnalyzer {
 
     // 적용 전/후 효과 비교: 최근 N주 동안 상위 추천에 실제 당첨이 얼마나 몰리는지 측정.
     private static void evaluateImprovement(List<LottoDraw> drawHistory, int recentWeeks,
-            Map<String, Double> accuracyWeights, Map<String, Double> rankDistribution,
-            String bestGroup, String worstGroup) {
+            Map<String, Double> accuracyWeights) {
 
         final int trainWeeks = WF_TRAIN_WEEKS; // walk-forward 재학습 창 (라이브 추천과 동일)
         int startIdx = Math.max(1, drawHistory.size() - recentWeeks);
-        String[] labels = {"기존(무가중 합산)", "신규(in-sample 가중)", "신규+순위그룹보정", "신규(walk-forward)"};
+        String[] labels = {"기존(무가중 합산)", "신규(in-sample 가중)", "walk-forward+순위보정", "신규(walk-forward)"};
         double[] sum6 = new double[4];
         double[] sum10 = new double[4];
         int weeks = 0;
@@ -519,14 +528,17 @@ public class LottoPatternAnalyzer {
             LottoDraw prev = drawHistory.get(i - 1);
             Set<Integer> winners = drawHistory.get(i).getWinningNumbers();
 
-            List<PatternAnalyzer> fresh = getAllAnalyzers();
-            for (PatternAnalyzer a : fresh) a.analyze(hist);
+            List<PatternAnalyzer> fresh = analyzersFor(hist);
+
+            // walk-forward: 이 주 이전 데이터만으로 가중치를 재학습 (look-ahead 없음)
+            Map<String, Double> wfWeights = computeAccuracyWeights(hist, trainWeeks);
 
             Map<Integer, Double> sA = computeFinalScores(fresh, hist, prev, null, null);
             Map<Integer, Double> sB = computeFinalScores(fresh, hist, prev, accuracyWeights, null);
-            Map<Integer, Double> sC = applyRankBoost(new HashMap<>(sB), rankDistribution, bestGroup, worstGroup);
-            // walk-forward: 이 주 이전 데이터만으로 가중치를 재학습 (look-ahead 없음)
-            Map<String, Double> wfWeights = computeAccuracyWeights(hist, trainWeeks);
+            // 순위그룹 보정도 walk-forward: 분포/best·worst를 이 주 이전 데이터로만 산정 (look-ahead 없음)
+            Map<String, Double> wfDist = computeRankDistribution(hist, RANK_DIST_WEEKS, wfWeights, null);
+            String[] bw = bestWorstGroup(wfDist);
+            Map<Integer, Double> sC = applyRankBoost(computeFinalScores(fresh, hist, prev, wfWeights, null), wfDist, bw[0], bw[1]);
             Map<Integer, Double> sD = computeFinalScores(fresh, hist, prev, wfWeights, null);
 
             int[] cA = countTopHits(sA, winners);

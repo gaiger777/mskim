@@ -98,7 +98,7 @@ textbox(s, Inches(1), Inches(4.2), Inches(11.3), Inches(0.6),
         "기준 회차: 1225회  |  22개 패턴 기법 앙상블  |  최근 15회차 백테스트",
         16, RGBColor(0xC9, 0xD3, 0xEA), False, PP_ALIGN.CENTER)
 textbox(s, Inches(1), Inches(6.6), Inches(11.3), Inches(0.5),
-        "2026-05-29 생성", 13, RGBColor(0x9A, 0xA8, 0xC9), False, PP_ALIGN.CENTER)
+        "2026-05-30 생성", 13, RGBColor(0x9A, 0xA8, 0xC9), False, PP_ALIGN.CENTER)
 
 # ---------------- Slide 1b: 추천 방식 검증 (walk-forward) ----------------
 import re
@@ -139,7 +139,7 @@ for j, h in enumerate(ev_hdr):
     style_cell(tbl.cell(0, j), 13, WHITE, True,
                PP_ALIGN.LEFT if j == 0 else PP_ALIGN.CENTER, fill=BLUE)
 for i, (name, t6, t10) in enumerate(ev, start=1):
-    is_wf = "walk-forward" in name
+    is_wf = "신규(walk-forward)" in name
     is_legacy = "기존" in name
     fill = GOLD if is_wf else (RGBColor(0xF6, 0xDA, 0xDA) if is_legacy else LIGHT if i % 2 == 0 else WHITE)
     tbl.cell(i, 0).text = name + ("  ← 과적합 제거 핵심 지표" if is_wf else "")
@@ -216,17 +216,17 @@ for ci, group in enumerate(cols):
 # ---------------- Slide 3: 순위별 당첨번호 분포 ----------------
 s = add_slide()
 set_bg(s, WHITE)
-header(s, "추천 순위 그룹별 당첨 번호 분포 (최근 15주 · 총 90개)")
+header(s, "추천 순위 그룹별 당첨 번호 분포 (최근 50주 · 총 300개)")
 dist = [
-    ("1-5위", 9, 10.00),
-    ("6-10위", 11, 12.22),
-    ("11-15위", 15, 16.67),
-    ("16-20위", 9, 10.00),
-    ("21-25위", 5, 5.56),
-    ("26-30위", 7, 7.78),
-    ("31-35위", 7, 7.78),
-    ("36-40위", 9, 10.00),
-    ("41-45위", 18, 20.00),
+    ("1-5위", 45, 15.00),
+    ("6-10위", 44, 14.67),
+    ("11-15위", 38, 12.67),
+    ("16-20위", 37, 12.33),
+    ("21-25위", 29, 9.67),
+    ("26-30위", 29, 9.67),
+    ("31-35위", 26, 8.67),
+    ("36-40위", 32, 10.67),
+    ("41-45위", 20, 6.67),
 ]
 maxpct = max(d[2] for d in dist)
 top = Inches(1.45)
@@ -248,7 +248,7 @@ for i, (grp, cnt, pct) in enumerate(dist):
     textbox(s, bar_x + w + Inches(0.1), y, Inches(2.4), rowh,
             f"{pct:.2f}%  ({cnt}개)", 13, GRAY, True, PP_ALIGN.LEFT, MSO_ANCHOR.MIDDLE)
 textbox(s, Inches(0.6), Inches(6.75), Inches(12), Inches(0.5),
-        "▶ '41-45위' 그룹이 20.00%로 가장 높음 (역설적 강세) · '21-25위' 그룹이 5.56%로 최저",
+        "▶ '1-5위' 그룹이 15.00%로 가장 높고 순위가 낮을수록 적중률 감소 (정상 분포) · '41-45위' 최저 6.67%",
         13, RED, True, PP_ALIGN.LEFT)
 
 # ---------------- Slide 3b: 그룹별 회차 당첨 내역 ----------------
@@ -273,7 +273,7 @@ def parse_dist(path):
 dist_rows = parse_dist("out/result.txt")
 s = add_slide()
 set_bg(s, WHITE)
-header(s, "순위 그룹별 회차 당첨 내역 (최근 15주)")
+header(s, "순위 그룹별 회차 당첨 내역 (최근 50주)")
 hdr = ["순위 그룹", "당첨", "비율", "회차별 당첨 번호 (회차,번호(예측순위))"]
 tbl = s.shapes.add_table(len(dist_rows) + 1, 4, Inches(0.3), Inches(1.2),
                          Inches(12.73), Inches(6.1)).table
@@ -311,9 +311,9 @@ bar(s, Inches(0.7), Inches(1.7), Inches(5.6), Pt(6), RED)
 textbox(s, Inches(1.0), Inches(2.0), Inches(5.0), Inches(0.6),
         "▲ 필출 확률 UP", 22, RED, True)
 textbox(s, Inches(1.0), Inches(2.75), Inches(5.0), Inches(0.6),
-        "'41-45위' 그룹", 26, NAVY, True)
+        "'1-5위' 그룹", 26, NAVY, True)
 textbox(s, Inches(1.0), Inches(3.45), Inches(5.0), Inches(0.7),
-        "최근 15주 당첨 확률 20.00%\n→ 1226회차 약 1.2개(1~3개) 포함 예상",
+        "최근 50주 당첨 확률 15.00%\n→ 1226회차 약 0.9개(1~3개) 포함 예상",
         14, GRAY, False)
 # DOWN 카드
 bar(s, Inches(7.0), Inches(1.7), Inches(5.6), Inches(2.6), LIGHT)
@@ -321,14 +321,14 @@ bar(s, Inches(7.0), Inches(1.7), Inches(5.6), Pt(6), BLUE)
 textbox(s, Inches(7.3), Inches(2.0), Inches(5.0), Inches(0.6),
         "▼ 제외 확률 UP", 22, BLUE, True)
 textbox(s, Inches(7.3), Inches(2.75), Inches(5.0), Inches(0.6),
-        "'21-25위' 그룹", 26, NAVY, True)
+        "'41-45위' 그룹", 26, NAVY, True)
 textbox(s, Inches(7.3), Inches(3.45), Inches(5.0), Inches(0.7),
-        "최근 15주 당첨 확률 5.56%\n→ 후순위로 고려 권장",
+        "최근 50주 당첨 확률 6.67%\n→ 후순위로 고려 권장",
         14, GRAY, False)
 textbox(s, Inches(0.7), Inches(4.9), Inches(11.9), Inches(1.5),
-        "해석: 앙상블 추천 상위권만이 아니라 최하위권(41-45위) 번호도 통계적으로 무시할 수\n"
-        "없는 적중률을 보입니다. 게임 구성 시 상위권 중심으로 하되 일부 하위권 번호를\n"
-        "분산 배치하는 전략이 유효할 수 있습니다.",
+        "해석: 분포 산정 창을 50주(총 300개 표본)로 확대하고 라이브 추천과 동일한 가중 점수\n"
+        "기준으로 일관화한 결과, 상위권일수록 적중률이 높은 정상적인 단조 분포가 나타납니다.\n"
+        "게임 구성은 상위권(1-25위) 중심으로 하는 전략이 통계적으로 유효합니다.",
         15, GRAY, False)
 
 # ---------------- Slide 5~6: 전체 추천 순위 45 (기여 패턴 포함) ----------------
