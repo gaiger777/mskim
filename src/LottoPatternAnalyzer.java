@@ -53,6 +53,27 @@ public class LottoPatternAnalyzer {
             runWindowSweep(drawHistory);
             return;
         }
+        // 진단 모드: 커스텀 패턴 발굴기(고정 풀). (java ... LottoPatternAnalyzer mine [W] [K])
+        if (args.length > 0 && args[0].equals("mine")) {
+            if (args.length > 1) CustomPatternMiner.W = Integer.parseInt(args[1]);
+            if (args.length > 2) CustomPatternMiner.K = Integer.parseInt(args[2]);
+            CustomPatternMiner.run(drawHistory);
+            return;
+        }
+        // 진단 모드: 유전 프로그래밍 발굴 + 학습/검증 과적합 대비. (java ... LottoPatternAnalyzer gp)
+        if (args.length > 0 && args[0].equals("gp")) {
+            GPPatternMiner.run(drawHistory);
+            return;
+        }
+        // 진단 모드: 연승 선택 전략. (java ... LottoPatternAnalyzer streak [S])
+        if (args.length > 0 && args[0].equals("streak")) {
+            if (args.length > 1) StreakPatternAnalyzer.S = Integer.parseInt(args[1]);
+            StreakPatternAnalyzer.run(drawHistory);
+            return;
+        }
+
+        // GP 진화 패턴을 커스텀 패턴 풀에 주입 (엔진/게임/PPT 자동 반영). 1회만 수행.
+        GPPatternMiner.injectIntoEngine(drawHistory);
 
         LottoDraw latestDraw = drawHistory.get(drawHistory.size() - 1);
         int nextDrawNo = latestDraw.drawNo + 1;
@@ -180,6 +201,8 @@ public class LottoPatternAnalyzer {
         analyzers.add(new SumRangePattern());
         analyzers.add(new OddEvenRatioPattern());
         analyzers.add(new HighLowRatioPattern());
+        analyzers.add(new CustomPatternAnalyzer());
+        analyzers.add(new StreakPatternAnalyzer());
         analyzers.add(new ExclusionPattern());
         return analyzers;
     }
