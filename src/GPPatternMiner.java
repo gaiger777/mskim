@@ -176,14 +176,18 @@ public class GPPatternMiner {
                 h -> h.size() < R ? Set.of() : Set.of(CustomPatternMiner.wrap(tree.eval(h))));
     }
 
-    // ── 엔진 주입: 전체 이력 최근 구간으로 진화 → CustomPatternMiner 풀에 추가 ──
+    // ── 엔진 주입: 과거 구간(엔진 z 측정창 이전)에서만 진화 → z 편향 제거 ──
+    // 엔진의 z 가중치는 최근 WF_TRAIN_WEEKS(200)회로 측정된다. 진화를 그 구간과
+    // 겹치지 않는 그 이전 구간으로 제한하면, 최근 200회는 패턴에게 out-of-sample이
+    // 되어 z가 부풀려지지 않는다(look-ahead 제거). 그 대가로 라이브 패턴은 다소 stale.
     private static boolean injected = false;
     static void injectIntoEngine(List<LottoPatternAnalyzer.LottoDraw> history) {
         if (injected) return;
         injected = true;
         int size = history.size();
-        int[] trainIdx = range(Math.max(R, size - 150), size); // 최근 150 전이로 진화
-        if (trainIdx.length < 10) return;
+        int trainEnd = size - LottoPatternAnalyzer.WF_TRAIN_WEEKS; // 최근 측정창은 진화에서 제외
+        int[] trainIdx = range(Math.max(R, trainEnd - 300), trainEnd);
+        if (trainIdx.length < 20) return;
         for (Node t : evolve(history, trainIdx, 42L))
             CustomPatternMiner.evolved.add(toPattern(t));
     }
