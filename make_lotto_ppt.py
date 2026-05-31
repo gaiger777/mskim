@@ -278,36 +278,45 @@ def slide_summary(r):
     return wrap_slide(sh)
 
 
-def slide_ranking(r):
-    sh = []
-    fid = 2
-    sh.append(textbox(fid, "title", 400000, 200000, W - 800000, 650000,
-                      run("1~45 종합 순위 (분석기 가중 합산 점수)", 2200, HDR, True))); fid += 1
+def slides_ranking(r):
+    """1~45 종합 순위. 기여패턴을 축약(…) 없이 전부 표시하기 위해 패턴 칸을 가로 전폭
+    단일 블록으로 키우고 45순위를 15개씩 여러 페이지로 분할한다(좁은 3블록 축약 폐지)."""
     used = set()
     for _, nums in r["games"]:
         used.update(nums)
-    sh.append(textbox(fid, "sub", 400000, 800000, W - 800000, 360000,
-                      run("노랑 음영 = 자동 추천 5게임에 포함된 번호", 1200, "808080"))); fid += 1
-
     rank = sorted(r["rank"], key=lambda t: t[0])[:45]
-    per = 15  # 3블록 × 15
+    per = 15
     blocks = [rank[i:i + per] for i in range(0, len(rank), per)]
-    cols = [640000, 760000, 1080000, 1600000]  # 순위, 번호, 점수, 기여패턴(축약)
-    bx0, pitch = 400000, 3850000
+    npage = len(blocks)
+    cols = [700000, 720000, 1100000, 8000000]  # 순위, 번호, 점수, 기여 패턴(전체)
+    cw = sum(cols)
+    bx = (W - cw) // 2
+    out_slides = []
     for bi, blk in enumerate(blocks):
+        sh = []
+        fid = 2
+        page = f"  ({bi + 1}/{npage})" if npage > 1 else ""
+        sh.append(textbox(fid, "title", 400000, 200000, W - 800000, 650000,
+                          run(f"1~45 종합 순위 (분석기 가중 합산 점수){page}", 2200, HDR, True))); fid += 1
+        if bi == 0:
+            sh.append(textbox(fid, "sub", 400000, 800000, W - 800000, 360000,
+                              run("노랑 음영 = 자동 추천 5게임에 포함된 번호", 1200, "808080"))); fid += 1
+            ty = 1300000
+        else:
+            ty = 820000
         rows = [hdr_cells(["순위", "번호", "점수", "기여 패턴"])]
         for (rk, num, sc, tags) in blk:
-            t = tags if len(tags) <= 11 else tags[:10] + "…"
             hl = num in used
             rows.append([
                 {"t": f"{rk}", "sz": 850, "bold": rk <= 6},
                 {"t": f"{num}", "sz": 900, "bold": True,
                  "fill": "FFF2CC" if hl else None, "font": "BF8F00" if hl else "1F3864"},
                 {"t": sc, "sz": 850},
-                {"t": t, "sz": 750, "algn": "l", "font": "808080"},
+                {"t": tags, "sz": 750, "algn": "l", "font": "808080"},
             ])
-        sh.append(gtable(fid, f"rk{bi}", bx0 + bi * pitch, 1300000, cols, rows, row_h=320000)); fid += 1
-    return wrap_slide(sh)
+        sh.append(gtable(fid, f"rk{bi}", bx, ty, cols, rows, row_h=320000)); fid += 1
+        out_slides.append(wrap_slide(sh))
+    return out_slides
 
 
 def slide_games(r):
@@ -564,7 +573,9 @@ def main():
           f"◎후보 {len(rh_cands)}개 / ○주기 {rh_periodic}개")
 
     rank2num = {int(t[0]): t[1] for t in r["rank"]}
-    slides = [slide_summary(r), slide_ranking(r), slide_games(r)]
+    slides = [slide_summary(r)]
+    slides += slides_ranking(r)
+    slides += [slide_games(r)]
     slides += slides_rankhits(rhwin, rhrows, rank2num, r["next_no"],
                               rank_gaps, rh_cands, rh_periodic)
     parts = {
