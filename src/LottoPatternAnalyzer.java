@@ -31,6 +31,14 @@ public class LottoPatternAnalyzer {
     // ※ 후보 간 차이는 사실상 노이즈 수준이며(무작위 대비 유의미한 우위 없음), 미래 적중을 보장하지 않음.
     static final int WF_TRAIN_WEEKS = 200; // walk-forward 가중치 학습 창 (라이브 추천 = 검증과 동일 방식)
     static final int RANK_DIST_WEEKS = 200; // 순위그룹 분포 산정 창 (표본 안정화)
+    // 100회 주기 보정: 다음 회차의 300회 이내 형제 회차(D-100·D-200·D-300) 당첨번호에 든 번호를
+    // '주기 하강 스왑'으로 우선순위 상향. ※ 재출현율(35.3%)이 무작위 기대(34.9%)와 동일 → 효과는 백테스트로 확인.
+    static final int CYCLE_LOOKBACK = 300;   // 주기 조회 범위(회)
+    // 패턴 판단 데이터 창. 0=전체 history. >0 이면 최신 N회차만으로 모든 패턴을 analyze/getScore.
+    // (예: 4 ≈ 최근 한 달) CLI 인자 win=N 으로 설정.
+    static int ANALYZE_WINDOW = 0;
+    // 게임 추출 시 순위 tier별 가중 배수: 상위권(1~15)·중위권(16~30)·하위권(31~45). 1.0=중립.
+    static double TIER_TOP = 1.0, TIER_MID = 1.0, TIER_BOT = 1.0;
     static final String[] RANK_GROUPS = {
             "1-5위", "6-10위", "11-15위", "16-20위", "21-25위",
             "26-30위", "31-35위", "36-40위", "41-45위"};
@@ -47,6 +55,9 @@ public class LottoPatternAnalyzer {
             System.err.println("데이터를 로드할 수 없습니다.");
             return;
         }
+
+        // 패턴 판단 데이터 창 설정: win=N (모든 패턴을 최신 N회차만으로 판단). 0=전체.
+        for (String a : args) if (a.startsWith("win=")) ANALYZE_WINDOW = Integer.parseInt(a.substring(4));
 
         // 진단 모드: 학습창(주차) 탐색. (java ... LottoPatternAnalyzer sweep)
         if (args.length > 0 && args[0].equals("sweep")) {
@@ -69,6 +80,60 @@ public class LottoPatternAnalyzer {
         if (args.length > 0 && args[0].equals("streak")) {
             if (args.length > 1) StreakPatternAnalyzer.S = Integer.parseInt(args[1]);
             StreakPatternAnalyzer.run(drawHistory);
+            return;
+        }
+
+        // 진단 모드: 대상 회차들을 직전 데이터로 예측해 '어떤 패턴이 당첨번호를 잘 잡는지' 측정.
+        //   (java ... LottoPatternAnalyzer patdiag [lo] [hi])  기본 1216~1226
+        if (args.length > 0 && args[0].equals("patdiag")) {
+            int lo = args.length > 1 ? Integer.parseInt(args[1]) : 1216;
+            int hi = args.length > 2 ? Integer.parseInt(args[2]) : 1226;
+            runPatternDiagnostic(drawHistory, lo, hi);
+            return;
+        }
+
+        // 진단 모드: 당첨번호가 추천순위 특정 구간([15~25],[35~45])에 들어가는지 확인.
+        //   (java ... LottoPatternAnalyzer bands [lo] [hi])  기본 1216~1225
+        if (args.length > 0 && args[0].equals("bands")) {
+            int lo = args.length > 1 ? Integer.parseInt(args[1]) : 1216;
+            int hi = args.length > 2 ? Integer.parseInt(args[2]) : 1225;
+            runBandCheck(drawHistory, lo, hi);
+            return;
+        }
+
+        // 진단 모드: 당첨번호가 상위권(1~15)/중위권(16~30)/하위권(31~45)에서 얼마나 나오는지.
+        //   (java ... LottoPatternAnalyzer tiers [lo] [hi])  기본 1216~1226
+        if (args.length > 0 && args[0].equals("tiers")) {
+            int lo = args.length > 1 ? Integer.parseInt(args[1]) : 1216;
+            int hi = args.length > 2 ? Integer.parseInt(args[2]) : 1226;
+            runTierCheck(drawHistory, lo, hi);
+            return;
+        }
+
+        // 진단 모드: 3순위 단위(1-3,4-6,…,43-45 = 15구간)로 당첨번호 분포.
+        //   (java ... LottoPatternAnalyzer tiers3 [lo] [hi])  기본 1216~1226
+        if (args.length > 0 && args[0].equals("tiers3")) {
+            int lo = args.length > 1 ? Integer.parseInt(args[1]) : 1216;
+            int hi = args.length > 2 ? Integer.parseInt(args[2]) : 1226;
+            runFineTierCheck(drawHistory, lo, hi);
+            return;
+        }
+
+        // 진단 모드: 45의 약수(3·5·9·15·45)를 구간 크기로 나눠, 모든 회차에 ≥1 당첨이 나오는 '필출' 구간 탐색.
+        //   (java ... LottoPatternAnalyzer divisors [lo] [hi])  기본 1216~1226
+        if (args.length > 0 && args[0].equals("divisors")) {
+            int lo = args.length > 1 ? Integer.parseInt(args[1]) : 1216;
+            int hi = args.length > 2 ? Integer.parseInt(args[2]) : 1226;
+            runDivisorCheck(drawHistory, lo, hi);
+            return;
+        }
+
+        // 진단 모드: 목표 회차의 5게임을 tier 가중(균등 vs U자) 별로 여러 번 생성해 평균 적중 비교.
+        //   (java ... LottoPatternAnalyzer gamesim [target] [trials])  기본 1226, 200회
+        if (args.length > 0 && args[0].equals("gamesim")) {
+            int target = args.length > 1 ? Integer.parseInt(args[1]) : 1226;
+            int trials = args.length > 2 ? Integer.parseInt(args[2]) : 200;
+            runGameSim(drawHistory, target, trials);
             return;
         }
 
@@ -130,10 +195,14 @@ public class LottoPatternAnalyzer {
                 computeFinalScores(currentAnalyzers, drawHistory, latestDraw, liveWeights, scoreTags);
         // 순위그룹 보정: 전체 점수 확정 후 2차 패스에서 적용 (기존 main의 순위 계산 버그 수정)
         final Map<Integer, Double> finalScores = applyRankBoost(rawScores, rankDistribution, bestGroup, worstGroup);
+        // 100회 주기 보정: 다음 회차의 300회 이내 형제 회차에 든 번호를 표시
+        Set<Integer> cycleSet = cycleNumbers(nextDrawNo, drawHistory);
+        for (int n : cycleSet) if (scoreTags.containsKey(n)) scoreTags.get(n).add("주기300");
 
-        // 6. 점수 기반으로 순위 매기고 결과 출력
+        // 6. 점수순 정렬 → 인접 단일 비교 스왑(주기 포함 번호가 바로 위 미포함 번호를 한 칸씩 추월)
         List<Integer> topNumbers = new ArrayList<>(finalScores.keySet());
         topNumbers.sort((a, b) -> finalScores.get(b).compareTo(finalScores.get(a)));
+        topNumbers = applyCycleAdjacentSwap(topNumbers, cycleSet);
 
         System.out.println("==========================================================");
         System.out.printf("      %d회차 확률 기반 패턴 분석 로또 추천 시스템 (v7.3)\n", nextDrawNo);
@@ -157,10 +226,10 @@ public class LottoPatternAnalyzer {
         //  - 채택: 통과 조합 중 적합도(분포 정렬도) 상위 5개 (무작위 채택 제거)
         GameFilter filter = GameFilter.fromHistory(drawHistory);
         List<List<Integer>> finalGames =
-                generateDistributionGames(topNumbers, finalScores, rankDistribution, filter, latestDraw, 5);
+                generateDistributionGames(topNumbers, finalScores, rankDistribution, filter, latestDraw, 5, cycleSet);
 
         System.out.println("----------------------------------------------------------");
-        System.out.println("⚙️ [최종 5게임 — 분포 가중 추출 + 고확률 필터 + 세로열 2개↓ + 적합도 상위]");
+        System.out.println("⚙️ [최종 5게임 — 분포 가중 추출 + 고확률 필터 + 세로열 2개↓ + 주기300 필수 + 적합도 상위]");
         System.out.println(filter.describe());
         System.out.println("----------------------------------------------------------");
         char gameLabel = 'A';
@@ -215,14 +284,21 @@ public class LottoPatternAnalyzer {
 
     // 주어진 history(prefix)에 대해 analyze()가 끝난 분석기 목록을 반환한다.
     // 캐시에 없으면 한 번만 analyze() 후 저장하여 동일 prefix 재계산을 제거한다.
+    // 패턴 판단에 쓸 history 구간. ANALYZE_WINDOW>0 이면 최신 N회차만 반환.
+    private static List<LottoDraw> win(List<LottoDraw> h) {
+        if (ANALYZE_WINDOW <= 0 || h.size() <= ANALYZE_WINDOW) return h;
+        return h.subList(h.size() - ANALYZE_WINDOW, h.size());
+    }
+
     private static List<PatternAnalyzer> analyzersFor(List<LottoDraw> history) {
+        List<LottoDraw> hw = win(history);
         int len = history.size();
         List<PatternAnalyzer> result = new ArrayList<>();
         for (PatternAnalyzer template : getAllAnalyzers()) {
-            String key = template.getName() + ":" + len;
+            String key = template.getName() + ":" + len + ":" + ANALYZE_WINDOW;
             PatternAnalyzer cached = ANALYZE_CACHE.get(key);
             if (cached == null) {
-                template.analyze(history);
+                template.analyze(hw);
                 cached = template;
                 ANALYZE_CACHE.put(key, cached);
             }
@@ -245,7 +321,7 @@ public class LottoPatternAnalyzer {
                 int[] stats = patternStats.get(freshAnalyzer.getName());
 
                 for (int n = 1; n <= 45; n++) {
-                    double score = freshAnalyzer.getScore(n, previousDraw, historyForAnalysis);
+                    double score = freshAnalyzer.getScore(n, previousDraw, win(historyForAnalysis));
                     if (score > 0) {
                         stats[1]++; // 예측 횟수 증가
                         if (actualWinningNumbers.contains(n)) {
@@ -415,9 +491,10 @@ public class LottoPatternAnalyzer {
     private static List<List<Integer>> generateDistributionGames(
             List<Integer> rankedNumbers, Map<Integer, Double> finalScores,
             Map<String, Double> rankDistribution, GameFilter filter,
-            LottoDraw latestDraw, int requiredGames) {
+            LottoDraw latestDraw, int requiredGames, Set<Integer> cycleSet) {
 
         // 1) 번호별 추출 가중치 = 소속 순위그룹의 당첨확률 (그룹당 5개가 공유). 제외수(veto)는 0.
+        //    순위는 이미 주기 스왑이 반영된 순서이므로, 주기 포함 번호는 더 좋은 그룹 가중치를 받는다.
         double[] weight = new double[46];
         for (int rank = 1; rank <= rankedNumbers.size(); rank++) {
             int n = rankedNumbers.get(rank - 1);
@@ -425,6 +502,8 @@ public class LottoPatternAnalyzer {
             double p = (g == null) ? 0 : rankDistribution.getOrDefault(g, 0.0);
             boolean vetoed = finalScores.getOrDefault(n, 0.0) <= -1000;
             weight[n] = vetoed ? 0.0 : p; // 그룹 내 균등 추출이므로 그룹확률을 그대로 사용
+            // tier 가중: 상위권(1~15)·하위권(31~45) 강화, 중위권(16~30) 약화
+            weight[n] *= (rank <= 15 ? TIER_TOP : rank <= 30 ? TIER_MID : TIER_BOT);
         }
 
         // 직전 회차 연속쌍(이월) 회피 집합
@@ -445,6 +524,7 @@ public class LottoPatternAnalyzer {
             if (!filter.passes(game)) continue;
             if (containsConsecutivePair(game, latestConsecutive)) continue;
             if (maxLottoColumnCount(game) >= 3) continue; // 로또 용지 세로열 3개 이상 체크 회피
+            if (Collections.disjoint(game, cycleSet)) continue; // 주기300 번호 0개면 재생성
             candidates.putIfAbsent(game, fitness(game, rankedNumbers, rankDistribution));
         }
 
@@ -592,7 +672,7 @@ public class LottoPatternAnalyzer {
                 stats.putIfAbsent(fa.getName(), new int[2]);
                 int[] s = stats.get(fa.getName());
                 for (int n = 1; n <= 45; n++) {
-                    if (fa.getScore(n, prev, h) > 0) { s[1]++; if (winners.contains(n)) s[0]++; }
+                    if (fa.getScore(n, prev, win(h)) > 0) { s[1]++; if (winners.contains(n)) s[0]++; }
                 }
             }
         }
@@ -614,7 +694,7 @@ public class LottoPatternAnalyzer {
 
         for (PatternAnalyzer analyzer : analyzers) {
             double[] raw = new double[46]; // index 1..45 사용
-            for (int n = 1; n <= 45; n++) raw[n] = analyzer.getScore(n, previousDraw, history);
+            for (int n = 1; n <= 45; n++) raw[n] = analyzer.getScore(n, previousDraw, win(history));
 
             if (accuracyWeights == null) { // 레거시: 무가중 단순 합산
                 for (int n = 1; n <= 45; n++) scores.put(n, scores.get(n) + raw[n]);
@@ -667,6 +747,372 @@ public class LottoPatternAnalyzer {
         return out;
     }
 
+    // targetDrawNo의 CYCLE_LOOKBACK(300)회 이내 형제 회차(D-100·D-200·D-300) 당첨번호 합집합.
+    // history는 drawNo 오름차순. backtest에서도 history는 target 이전 데이터만 담으므로 look-ahead 없음.
+    private static Set<Integer> cycleNumbers(int targetDrawNo, List<LottoDraw> history) {
+        Set<Integer> set = new HashSet<>();
+        for (int lag = 100; lag <= CYCLE_LOOKBACK; lag += 100) {
+            int s = targetDrawNo - lag;
+            if (s < 1) continue;
+            // 연속 회차면 index = s-1. 아니면 선형 탐색으로 보강.
+            if (s - 1 < history.size() && history.get(s - 1).drawNo == s) {
+                set.addAll(history.get(s - 1).getWinningNumbers());
+            } else {
+                for (LottoDraw d : history) if (d.drawNo == s) { set.addAll(d.getWinningNumbers()); break; }
+            }
+        }
+        return set;
+    }
+
+    // 주기 하강 스왑: 점수순 리스트를 좌→우로 1회 훑으며 '위=주기 미포함 && 아래=주기 포함'이면 교환.
+    // 교환 후에도 같은 미포함 번호가 다음 칸과 계속 비교되므로, 미포함 번호는 자기 아래의
+    // '연속된' 주기 포함 번호들을 전부 지나 가라앉는다. (예: 1위 미포함, 2·3위 포함 → 1위가 3위로,
+    //  아래가 전부 포함이면 1위가 45위까지 하강. 미포함 번호를 만나면 멈춤.)
+    private static List<Integer> applyCycleAdjacentSwap(List<Integer> ranked, Set<Integer> cycle) {
+        List<Integer> r = new ArrayList<>(ranked);
+        for (int i = 0; i + 1 < r.size(); i++) {
+            if (!cycle.contains(r.get(i)) && cycle.contains(r.get(i + 1))) {
+                Collections.swap(r, i, i + 1);
+            }
+        }
+        return r;
+    }
+
+    // 순서가 매겨진 리스트에서 상위 6/10 안의 당첨 번호 수 [top6, top10].
+    private static int[] countTopHitsList(List<Integer> ranked, Set<Integer> winners) {
+        int h6 = 0, h10 = 0;
+        for (int t = 0; t < 10 && t < ranked.size(); t++) {
+            if (winners.contains(ranked.get(t))) { if (t < 6) h6++; h10++; }
+        }
+        return new int[]{h6, h10};
+    }
+
+    // 단일 분석기 점수로 1~45 순위 (동점은 번호 오름차순).
+    private static List<Integer> rankByAnalyzer(PatternAnalyzer a, LottoDraw prev, List<LottoDraw> hist) {
+        Map<Integer, Double> s = new HashMap<>();
+        for (int n = 1; n <= 45; n++) s.put(n, a.getScore(n, prev, win(hist)));
+        List<Integer> r = new ArrayList<>();
+        for (int n = 1; n <= 45; n++) r.add(n);
+        r.sort((x, y) -> { int c = Double.compare(s.get(y), s.get(x)); return c != 0 ? c : Integer.compare(x, y); });
+        return r;
+    }
+
+    // 진단: 대상 회차 lo~hi를 각각 직전 데이터로 예측해, 패턴별로 당첨번호를 얼마나 잘 잡는지 측정.
+    // 어떤 패턴도 미리 고를 수 없음(회차마다 최적 패턴이 달라짐)을 보이는 것이 목적. look-ahead 없음.
+    private static void runPatternDiagnostic(List<LottoDraw> all, int lo, int hi) {
+        // drawNo → index
+        Map<Integer, Integer> idxOf = new HashMap<>();
+        for (int i = 0; i < all.size(); i++) idxOf.put(all.get(i).drawNo, i);
+
+        Map<String, double[]> acc = new LinkedHashMap<>(); // name → [sumTop6, sumTop10, count]
+        double ensTop6 = 0, ensTop10 = 0; int nDraws = 0;
+
+        System.out.println("==========================================================");
+        System.out.printf("   회차별 '최적 패턴' 진단 (대상 %d~%d, 직전 데이터로 예측)\n", lo, hi);
+        System.out.println("==========================================================");
+        System.out.println("회차 | 앙상블 상위10 적중 | 그 회차 최적 단일패턴(상위10 적중수)");
+        System.out.println("----------------------------------------------------------");
+
+        for (int T = lo; T <= hi; T++) {
+            Integer idx = idxOf.get(T);
+            if (idx == null || idx < 1) continue;
+            List<LottoDraw> hist = all.subList(0, idx);
+            LottoDraw prev = all.get(idx - 1);
+            Set<Integer> win = all.get(idx).getWinningNumbers();
+            List<PatternAnalyzer> az = analyzersFor(hist);
+
+            String best = "-"; int bestHit = -1;
+            for (PatternAnalyzer a : az) {
+                List<Integer> ranked = rankByAnalyzer(a, prev, hist);
+                int[] th = countTopHitsList(ranked, win);
+                acc.computeIfAbsent(a.getName(), k -> new double[3]);
+                double[] s = acc.get(a.getName()); s[0] += th[0]; s[1] += th[1]; s[2]++;
+                if (th[1] > bestHit) { bestHit = th[1]; best = a.getName(); }
+            }
+            // 앙상블(walk-forward 가중 + 순위그룹 + 주기 스왑 = 라이브 로직)
+            Map<String, Double> w = computeAccuracyWeights(hist, WF_TRAIN_WEEKS);
+            Map<Integer, Double> sc = computeFinalScores(az, hist, prev, w, null);
+            Map<String, Double> wfDist = computeRankDistribution(hist, RANK_DIST_WEEKS, w, null);
+            String[] bw = bestWorstGroup(wfDist);
+            sc = applyRankBoost(sc, wfDist, bw[0], bw[1]);
+            List<Integer> ranked = applyCycleAdjacentSwap(rankByScore(sc), cycleNumbers(T, hist));
+            int[] e = countTopHitsList(ranked, win);
+            ensTop6 += e[0]; ensTop10 += e[1]; nDraws++;
+            System.out.printf("%4d |        %d개         | %s (%d개)\n", T, e[1], best, bestHit);
+        }
+
+        System.out.println("----------------------------------------------------------");
+        System.out.printf("앙상블 평균: 상위6 %.2f개 / 상위10 %.2f개  (무작위 기대 0.80 / 1.33)\n",
+                ensTop6 / nDraws, ensTop10 / nDraws);
+        System.out.println("\n패턴별 평균 적중 (대상 " + nDraws + "회, 상위10 기준 내림차순):");
+        System.out.println("----------------------------------------------------------");
+        List<Map.Entry<String, double[]>> rows = new ArrayList<>(acc.entrySet());
+        rows.sort((x, y) -> Double.compare(y.getValue()[1] / y.getValue()[2], x.getValue()[1] / x.getValue()[2]));
+        System.out.println("패턴            | 평균 상위6 | 평균 상위10");
+        for (Map.Entry<String, double[]> en : rows) {
+            double[] s = en.getValue();
+            System.out.printf("%-14s | %8.2f | %9.2f\n", en.getKey(), s[0] / s[2], s[1] / s[2]);
+        }
+        System.out.println("==========================================================");
+        System.out.println("※ '최적 패턴'이 회차마다 바뀌면, 다음 회차의 최적 패턴은 미리 알 수 없음 → 특정 패턴/수정으로");
+        System.out.println("  과거 한 회차를 맞춰도 예측력이 아님(오버피팅). 패턴별 평균도 무작위 기대 부근에 수렴.");
+    }
+
+    // 진단: 대상 회차들의 당첨번호가 추천순위 [15~25]·[35~45] 구간에 들어가는지 확인.
+    private static void runBandCheck(List<LottoDraw> all, int lo, int hi) {
+        Map<Integer, Integer> idxOf = new HashMap<>();
+        for (int i = 0; i < all.size(); i++) idxOf.put(all.get(i).drawNo, i);
+
+        int totMid = 0, totHigh = 0, totUnion = 0, totWin = 0, nDraws = 0;
+        System.out.println("==========================================================");
+        System.out.printf("   당첨번호의 추천순위 구간 확인 (대상 %d~%d)\n", lo, hi);
+        System.out.println("   구간: [15~25위], [35~45위]  (두 구간 합 = 45자리 중 22자리)\n");
+        System.out.println("회차 | 당첨번호(추천순위)                          | 15~25 | 35~45");
+        System.out.println("----------------------------------------------------------");
+        for (int T = lo; T <= hi; T++) {
+            Integer idx = idxOf.get(T);
+            if (idx == null || idx < 1) continue;
+            List<LottoDraw> hist = all.subList(0, idx);
+            LottoDraw prev = all.get(idx - 1);
+            Set<Integer> win = all.get(idx).getWinningNumbers();
+            List<PatternAnalyzer> az = analyzersFor(hist);
+            Map<String, Double> w = computeAccuracyWeights(hist, WF_TRAIN_WEEKS);
+            Map<Integer, Double> sc = computeFinalScores(az, hist, prev, w, null);
+            Map<String, Double> wfDist = computeRankDistribution(hist, RANK_DIST_WEEKS, w, null);
+            String[] bw = bestWorstGroup(wfDist);
+            sc = applyRankBoost(sc, wfDist, bw[0], bw[1]);
+            List<Integer> ranked = applyCycleAdjacentSwap(rankByScore(sc), cycleNumbers(T, hist));
+
+            int mid = 0, high = 0;
+            List<Integer> wl = new ArrayList<>(win); Collections.sort(wl);
+            StringBuilder sb = new StringBuilder();
+            for (int n : wl) {
+                int r = ranked.indexOf(n) + 1;
+                boolean m = r >= 15 && r <= 25, h = r >= 35 && r <= 45;
+                if (m) mid++; if (h) high++;
+                sb.append(String.format("%d(%d%s) ", n, r, m ? "M" : h ? "H" : ""));
+            }
+            int union = mid + high;
+            totMid += mid; totHigh += high; totUnion += union; totWin += 6; nDraws++;
+            System.out.printf("%4d | %-42s | %d개  | %d개\n", T, sb.toString().trim(), mid, high);
+        }
+        System.out.println("----------------------------------------------------------");
+        System.out.printf("합계: 당첨 %d개 중  [15~25] %d개 · [35~45] %d개 · 두 구간 합 %d개 (%.1f%%)\n",
+                totWin, totMid, totHigh, totUnion, 100.0 * totUnion / totWin);
+        System.out.printf("무작위 기대(두 구간=22/45자리): %d개 중 %.1f개 (48.9%%)\n",
+                totWin, totWin * 22.0 / 45);
+        System.out.println("※ M=15~25위, H=35~45위. 관측이 무작위 기대 부근이면 '몰린다'고 볼 수 없음.");
+        System.out.println("==========================================================");
+    }
+
+    // 진단: 당첨번호가 상위권(1~15)/중위권(16~30)/하위권(31~45)에서 얼마나 나오는지.
+    private static void runTierCheck(List<LottoDraw> all, int lo, int hi) {
+        Map<Integer, Integer> idxOf = new HashMap<>();
+        for (int i = 0; i < all.size(); i++) idxOf.put(all.get(i).drawNo, i);
+
+        int tTop = 0, tMid = 0, tBot = 0, nDraws = 0;
+        System.out.println("==========================================================");
+        System.out.printf("   당첨번호의 추천순위 구간 분포 (대상 %d~%d)\n", lo, hi);
+        System.out.println("   상위권 1~15위 · 중위권 16~30위 · 하위권 31~45위\n");
+        System.out.println("회차 | 당첨번호(추천순위)                          | 상위 중위 하위");
+        System.out.println("----------------------------------------------------------");
+        for (int T = lo; T <= hi; T++) {
+            Integer idx = idxOf.get(T);
+            if (idx == null || idx < 1) continue;
+            List<LottoDraw> hist = all.subList(0, idx);
+            LottoDraw prev = all.get(idx - 1);
+            Set<Integer> win = all.get(idx).getWinningNumbers();
+            List<PatternAnalyzer> az = analyzersFor(hist);
+            Map<String, Double> w = computeAccuracyWeights(hist, WF_TRAIN_WEEKS);
+            Map<Integer, Double> sc = computeFinalScores(az, hist, prev, w, null);
+            Map<String, Double> wfDist = computeRankDistribution(hist, RANK_DIST_WEEKS, w, null);
+            String[] bw = bestWorstGroup(wfDist);
+            sc = applyRankBoost(sc, wfDist, bw[0], bw[1]);
+            List<Integer> ranked = applyCycleAdjacentSwap(rankByScore(sc), cycleNumbers(T, hist));
+
+            int top = 0, mid = 0, bot = 0;
+            List<Integer> wl = new ArrayList<>(win); Collections.sort(wl);
+            StringBuilder sb = new StringBuilder();
+            for (int n : wl) {
+                int r = ranked.indexOf(n) + 1;
+                String z = r <= 15 ? "상" : r <= 30 ? "중" : "하";
+                if (r <= 15) top++; else if (r <= 30) mid++; else bot++;
+                sb.append(String.format("%d(%d%s) ", n, r, z));
+            }
+            tTop += top; tMid += mid; tBot += bot; nDraws++;
+            System.out.printf("%4d | %-42s |  %d   %d   %d\n", T, sb.toString().trim(), top, mid, bot);
+        }
+        System.out.println("----------------------------------------------------------");
+        int totWin = nDraws * 6;
+        System.out.printf("합계(%d회, 당첨 %d개): 상위권 %d · 중위권 %d · 하위권 %d\n",
+                nDraws, totWin, tTop, tMid, tBot);
+        System.out.printf("  비율:            상위권 %.1f%% · 중위권 %.1f%% · 하위권 %.1f%%\n",
+                100.0 * tTop / totWin, 100.0 * tMid / totWin, 100.0 * tBot / totWin);
+        System.out.printf("  무작위 기대:      각 구간 33.3%% (회차당 2개씩, %d개 중 %.1f개)\n", totWin, totWin / 3.0);
+        System.out.println("==========================================================");
+    }
+
+    // 진단: 3순위 단위(1-3,4-6,…,43-45 = 15구간)로 당첨번호 분포.
+    private static void runFineTierCheck(List<LottoDraw> all, int lo, int hi) {
+        Map<Integer, Integer> idxOf = new HashMap<>();
+        for (int i = 0; i < all.size(); i++) idxOf.put(all.get(i).drawNo, i);
+
+        int[] cnt = new int[15]; // 구간 g = (rank-1)/3
+        int nDraws = 0;
+        for (int T = lo; T <= hi; T++) {
+            Integer idx = idxOf.get(T);
+            if (idx == null || idx < 1) continue;
+            List<LottoDraw> hist = all.subList(0, idx);
+            LottoDraw prev = all.get(idx - 1);
+            Set<Integer> win = all.get(idx).getWinningNumbers();
+            List<PatternAnalyzer> az = analyzersFor(hist);
+            Map<String, Double> w = computeAccuracyWeights(hist, WF_TRAIN_WEEKS);
+            Map<Integer, Double> sc = computeFinalScores(az, hist, prev, w, null);
+            Map<String, Double> wfDist = computeRankDistribution(hist, RANK_DIST_WEEKS, w, null);
+            String[] bw = bestWorstGroup(wfDist);
+            sc = applyRankBoost(sc, wfDist, bw[0], bw[1]);
+            List<Integer> ranked = applyCycleAdjacentSwap(rankByScore(sc), cycleNumbers(T, hist));
+            for (int n : win) {
+                int r = ranked.indexOf(n) + 1;
+                if (r >= 1 && r <= 45) cnt[(r - 1) / 3]++;
+            }
+            nDraws++;
+        }
+        int totWin = nDraws * 6;
+        double exp = totWin * 3.0 / 45; // 구간당 무작위 기대
+        System.out.println("==========================================================");
+        System.out.printf("   당첨번호 3순위 단위 분포 (대상 %d~%d, %d회)\n", lo, hi, nDraws);
+        System.out.printf("   당첨 %d개 · 무작위 기대 = 구간당 %.1f개 (6.7%%)\n", totWin, exp);
+        System.out.println("----------------------------------------------------------");
+        System.out.println("순위구간 | 당첨수 | 비율  | (막대)");
+        int max = 0; for (int c : cnt) max = Math.max(max, c);
+        for (int g = 0; g < 15; g++) {
+            int a = g * 3 + 1, b = g * 3 + 3;
+            int bars = max == 0 ? 0 : (int) Math.round(cnt[g] * 30.0 / max);
+            String bar = "█".repeat(bars);
+            String flag = cnt[g] >= exp * 1.5 ? " ▲" : cnt[g] <= exp * 0.5 ? " ▽" : "";
+            System.out.printf("%2d~%2d위 | %4d개 | %4.1f%% | %s%s\n",
+                    a, b, cnt[g], 100.0 * cnt[g] / totWin, bar, flag);
+        }
+        System.out.println("----------------------------------------------------------");
+        System.out.println("▲=기대의 1.5배↑, ▽=기대의 0.5배↓. 표본 작으면 변동이 큼(노이즈 주의).");
+        System.out.println("==========================================================");
+    }
+
+    // 진단: 45의 약수(>1)를 구간 크기로 나눠, 모든 회차에 ≥1 당첨이 나오는 '필출' 구간을 찾는다.
+    private static void runDivisorCheck(List<LottoDraw> all, int lo, int hi) {
+        Map<Integer, Integer> idxOf = new HashMap<>();
+        for (int i = 0; i < all.size(); i++) idxOf.put(all.get(i).drawNo, i);
+
+        // 회차별 당첨번호의 추천순위(1~45) 집합을 미리 계산
+        List<Set<Integer>> winRanksPerDraw = new ArrayList<>();
+        for (int T = lo; T <= hi; T++) {
+            Integer idx = idxOf.get(T);
+            if (idx == null || idx < 1) continue;
+            List<LottoDraw> hist = all.subList(0, idx);
+            LottoDraw prev = all.get(idx - 1);
+            Set<Integer> win = all.get(idx).getWinningNumbers();
+            List<PatternAnalyzer> az = analyzersFor(hist);
+            Map<String, Double> w = computeAccuracyWeights(hist, WF_TRAIN_WEEKS);
+            Map<Integer, Double> sc = computeFinalScores(az, hist, prev, w, null);
+            Map<String, Double> wfDist = computeRankDistribution(hist, RANK_DIST_WEEKS, w, null);
+            String[] bw = bestWorstGroup(wfDist);
+            sc = applyRankBoost(sc, wfDist, bw[0], bw[1]);
+            List<Integer> ranked = applyCycleAdjacentSwap(rankByScore(sc), cycleNumbers(T, hist));
+            Set<Integer> wr = new HashSet<>();
+            for (int n : win) wr.add(ranked.indexOf(n) + 1);
+            winRanksPerDraw.add(wr);
+        }
+        int nDraws = winRanksPerDraw.size();
+
+        System.out.println("==========================================================");
+        System.out.printf("   45 약수 구간별 '필출(모든 회차 ≥1 당첨)' 탐색 (대상 %d~%d, %d회)\n", lo, hi, nDraws);
+        System.out.println("==========================================================");
+        int[] divisors = {3, 5, 9, 15, 45};
+        for (int d : divisors) {
+            int groups = 45 / d;
+            // 무작위 기대: 한 구간이 한 회차에 ≥1 당첨일 확률
+            double pEmpty = 1.0;
+            for (int i = 0; i < 6; i++) pEmpty *= (double) (45 - d - i) / (45 - i);
+            double pHit = 1 - pEmpty;
+            double expPilchul = groups * Math.pow(pHit, nDraws); // 기대 필출 구간 수
+
+            System.out.printf("\n[구간 크기 %d위 → %d개 구간]  (한 구간 ≥1당첨 확률 %.1f%%, 무작위 기대 필출구간 %.2f개)\n",
+                    d, groups, pHit * 100, expPilchul);
+            List<String> pilchul = new ArrayList<>();
+            for (int g = 0; g < groups; g++) {
+                int a = g * d + 1, b = g * d + d;
+                int hitDraws = 0;
+                for (Set<Integer> wr : winRanksPerDraw) {
+                    boolean any = false;
+                    for (int r = a; r <= b; r++) if (wr.contains(r)) { any = true; break; }
+                    if (any) hitDraws++;
+                }
+                String mark = (hitDraws == nDraws) ? "  ★필출" : "";
+                if (hitDraws == nDraws) pilchul.add(a + "~" + b + "위");
+                System.out.printf("  %2d~%2d위 | %d/%d 회 적중%s\n", a, b, hitDraws, nDraws, mark);
+            }
+            System.out.println("  → 필출 구간: " + (pilchul.isEmpty() ? "없음" : String.join(", ", pilchul)));
+        }
+        System.out.println("\n----------------------------------------------------------");
+        System.out.println("※ 구간이 클수록 '필출'은 당연히 쉬워짐(자리를 많이 덮으니까). 무작위 기대보다");
+        System.out.println("  특별히 많지 않으면 의미 없음. 표본 11회로는 큰 구간이 우연히 필출이 되기 쉬움.");
+        System.out.println("==========================================================");
+    }
+
+    // 진단: 목표 회차를 직전 데이터로 예측한 순위로, tier 가중 설정별 5게임을 trials회 생성해 평균 적중 비교.
+    private static void runGameSim(List<LottoDraw> all, int target, int trials) {
+        Map<Integer, Integer> idxOf = new HashMap<>();
+        for (int i = 0; i < all.size(); i++) idxOf.put(all.get(i).drawNo, i);
+        Integer idx = idxOf.get(target);
+        if (idx == null || idx < 1) { System.out.println("대상 회차 없음: " + target); return; }
+
+        List<LottoDraw> hist = all.subList(0, idx);
+        LottoDraw prev = all.get(idx - 1);
+        Set<Integer> winners = all.get(idx).getWinningNumbers();
+
+        List<PatternAnalyzer> az = analyzersFor(hist);
+        Map<String, Double> w = computeAccuracyWeights(hist, WF_TRAIN_WEEKS);
+        Map<Integer, Double> sc = computeFinalScores(az, hist, prev, w, null);
+        Map<String, Double> wfDist = computeRankDistribution(hist, RANK_DIST_WEEKS, w, null);
+        String[] bw = bestWorstGroup(wfDist);
+        sc = applyRankBoost(sc, wfDist, bw[0], bw[1]);
+        List<Integer> ranked = applyCycleAdjacentSwap(rankByScore(sc), cycleNumbers(target, hist));
+        Set<Integer> cyc = cycleNumbers(target, hist);
+        GameFilter filter = GameFilter.fromHistory(hist);
+
+        List<Integer> wl = new ArrayList<>(winners); Collections.sort(wl);
+        System.out.println("==========================================================");
+        System.out.printf("   tier 가중별 5게임 평균 적중 (대상 %d, 직전 %d 기준, %d회 시뮬)\n", target, prev.drawNo, trials);
+        System.out.println("   실제 당첨: " + wl);
+        System.out.println("----------------------------------------------------------");
+        System.out.println("tier 가중(상/중/하)      | 평균 총적중/30 | 평균 당첨번호커버/6 | 1개↑게임%");
+        System.out.println("----------------------------------------------------------");
+        double[][] configs = {{1, 1, 1}, {1.3, 0.4, 1.3}, {1.5, 0.2, 1.5}};
+        String[] cnames = {"균등 1.0/1.0/1.0", "U자 1.3/0.4/1.3", "강U자 1.5/0.2/1.5"};
+        for (int c = 0; c < configs.length; c++) {
+            TIER_TOP = configs[c][0]; TIER_MID = configs[c][1]; TIER_BOT = configs[c][2];
+            double sumTot = 0, sumCover = 0; int gamesWithHit = 0, totGames = 0;
+            for (int t = 0; t < trials; t++) {
+                List<List<Integer>> games = generateDistributionGames(ranked, sc, wfDist, filter, prev, 5, cyc);
+                Set<Integer> covered = new HashSet<>();
+                for (List<Integer> g : games) {
+                    int m = 0;
+                    for (int n : g) if (winners.contains(n)) { m++; covered.add(n); }
+                    sumTot += m; totGames++;
+                    if (m > 0) gamesWithHit++;
+                }
+                sumCover += covered.size();
+            }
+            TIER_TOP = TIER_MID = TIER_BOT = 1.0;
+            System.out.printf("%-22s | %12.2f | %18.2f | %6.1f%%\n",
+                    cnames[c], sumTot / trials, sumCover / trials, 100.0 * gamesWithHit / totGames);
+        }
+        System.out.println("----------------------------------------------------------");
+        System.out.printf("무작위 기대(6/45): 게임당 평균 %.2f개, 5게임 총 %.2f/30\n", 6 * 6.0 / 45, 5 * 6 * 6.0 / 45);
+        System.out.println("==========================================================");
+    }
+
     // 분포에서 최고/최저 비율 그룹을 [best, worst]로 반환 (둘 다 없으면 null).
     private static String[] bestWorstGroup(Map<String, Double> dist) {
         String best = dist.entrySet().stream().max(Map.Entry.comparingByValue()).map(Map.Entry::getKey).orElse(null);
@@ -696,9 +1142,10 @@ public class LottoPatternAnalyzer {
 
         final int trainWeeks = WF_TRAIN_WEEKS; // walk-forward 재학습 창 (라이브 추천과 동일)
         int startIdx = Math.max(1, drawHistory.size() - recentWeeks);
-        String[] labels = {"기존(무가중 합산)", "신규(in-sample 가중)", "walk-forward+순위보정", "신규(walk-forward)"};
-        double[] sum6 = new double[4];
-        double[] sum10 = new double[4];
+        String[] labels = {"기존(무가중 합산)", "신규(in-sample 가중)", "walk-forward+순위보정",
+                "신규(walk-forward)", "walk-forward+순위+주기스왑"};
+        double[] sum6 = new double[5];
+        double[] sum10 = new double[5];
         int weeks = 0;
 
         for (int i = startIdx; i < drawHistory.size(); i++) {
@@ -718,15 +1165,20 @@ public class LottoPatternAnalyzer {
             String[] bw = bestWorstGroup(wfDist);
             Map<Integer, Double> sC = applyRankBoost(computeFinalScores(fresh, hist, prev, wfWeights, null), wfDist, bw[0], bw[1]);
             Map<Integer, Double> sD = computeFinalScores(fresh, hist, prev, wfWeights, null);
+            // 주기 스왑: sC 순위에서 인접 단일 비교 스왑 적용 (hist만 사용 → look-ahead 없음)
+            Set<Integer> cyc = cycleNumbers(drawHistory.get(i).drawNo, hist);
+            List<Integer> sE = applyCycleAdjacentSwap(rankByScore(sC), cyc);
 
             int[] cA = countTopHits(sA, winners);
             int[] cB = countTopHits(sB, winners);
             int[] cC = countTopHits(sC, winners);
             int[] cD = countTopHits(sD, winners);
+            int[] cE = countTopHitsList(sE, winners);
             sum6[0] += cA[0]; sum10[0] += cA[1];
             sum6[1] += cB[0]; sum10[1] += cB[1];
             sum6[2] += cC[0]; sum10[2] += cC[1];
             sum6[3] += cD[0]; sum10[3] += cD[1];
+            sum6[4] += cE[0]; sum10[4] += cE[1];
             weeks++;
         }
 
@@ -736,10 +1188,10 @@ public class LottoPatternAnalyzer {
         System.out.println("==========================================================");
         System.out.printf ("기대값(무작위): 상위6 평균 %.2f개 / 상위10 평균 %.2f개\n", 6 * 6.0 / 45, 10 * 6.0 / 45);
         System.out.println("----------------------------------------------------------");
-        System.out.println("방식                        | 상위6 적중 | 상위10 적중");
+        System.out.println("방식                          | 상위6 적중 | 상위10 적중");
         System.out.println("----------------------------------------------------------");
-        for (int k = 0; k < 4; k++) {
-            System.out.printf("%-24s | %6.2f개 | %7.2f개\n", labels[k], sum6[k] / weeks, sum10[k] / weeks);
+        for (int k = 0; k < labels.length; k++) {
+            System.out.printf("%-28s | %6.2f개 | %7.2f개\n", labels[k], sum6[k] / weeks, sum10[k] / weeks);
         }
         System.out.println("==========================================================");
     }
