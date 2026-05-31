@@ -137,6 +137,16 @@ public class LottoPatternAnalyzer {
             return;
         }
 
+        // 진단 모드: 순위별(1~45위) 추천 번호가 당첨으로 재출현한 횟수·회차 + 재출현 간격(차이수) 반복 분석.
+        //   (java ... LottoPatternAnalyzer rankhits [lo] [hi])  기본 최근 100회(범위 확대)
+        if (args.length > 0 && args[0].equals("rankhits")) {
+            int hi = args.length > 2 ? Integer.parseInt(args[2]) : drawHistory.get(drawHistory.size() - 1).drawNo;
+            int lo = args.length > 1 ? Integer.parseInt(args[1]) : hi - 99;
+            GPPatternMiner.injectIntoEngine(drawHistory); // 라이브 게임과 동일한 패턴 풀로 순위 산정(일관성)
+            runRankHits(drawHistory, lo, hi);
+            return;
+        }
+
         // GP 진화 패턴을 커스텀 패턴 풀에 주입 (엔진/게임/PPT 자동 반영). 1회만 수행.
         GPPatternMiner.injectIntoEngine(drawHistory);
 
@@ -198,6 +208,11 @@ public class LottoPatternAnalyzer {
         // 100회 주기 보정: 다음 회차의 300회 이내 형제 회차에 든 번호를 표시
         Set<Integer> cycleSet = cycleNumbers(nextDrawNo, drawHistory);
         for (int n : cycleSet) if (scoreTags.containsKey(n)) scoreTags.get(n).add("주기300");
+        // 재출현 간격(차이수) 3회 이상 반복 번호: 게임 생성 시 '무조건 포함' 대상 (최근 100회 기준)
+        Set<Integer> gapMustSet = gapRepeatNumbers(drawHistory, 100);
+        for (int n : gapMustSet) if (scoreTags.containsKey(n)) scoreTags.get(n).add("간격3회");
+        if (!gapMustSet.isEmpty())
+            System.out.println("※ 간격3회 필수 포함 번호(재출현 간격 3회↑ 반복): " + new TreeSet<>(gapMustSet));
 
         // 6. 점수순 정렬 → 인접 단일 비교 스왑(주기 포함 번호가 바로 위 미포함 번호를 한 칸씩 추월)
         List<Integer> topNumbers = new ArrayList<>(finalScores.keySet());
@@ -226,10 +241,10 @@ public class LottoPatternAnalyzer {
         //  - 채택: 통과 조합 중 적합도(분포 정렬도) 상위 5개 (무작위 채택 제거)
         GameFilter filter = GameFilter.fromHistory(drawHistory);
         List<List<Integer>> finalGames =
-                generateDistributionGames(topNumbers, finalScores, rankDistribution, filter, latestDraw, 5, cycleSet);
+                generateDistributionGames(topNumbers, finalScores, rankDistribution, filter, latestDraw, 5, cycleSet, gapMustSet);
 
         System.out.println("----------------------------------------------------------");
-        System.out.println("⚙️ [최종 5게임 — 분포 가중 추출 + 고확률 필터 + 세로열 2개↓ + 주기300 필수 + 적합도 상위]");
+        System.out.println("⚙️ [최종 5게임 — 분포 가중 추출 + 고확률 필터 + 세로열 2개↓ + 주기300 필수 + 간격3회 필수 + 적합도 상위]");
         System.out.println(filter.describe());
         System.out.println("----------------------------------------------------------");
         char gameLabel = 'A';
@@ -491,7 +506,7 @@ public class LottoPatternAnalyzer {
     private static List<List<Integer>> generateDistributionGames(
             List<Integer> rankedNumbers, Map<Integer, Double> finalScores,
             Map<String, Double> rankDistribution, GameFilter filter,
-            LottoDraw latestDraw, int requiredGames, Set<Integer> cycleSet) {
+            LottoDraw latestDraw, int requiredGames, Set<Integer> cycleSet, Set<Integer> mustInclude) {
 
         // 1) 번호별 추출 가중치 = 소속 순위그룹의 당첨확률 (그룹당 5개가 공유). 제외수(veto)는 0.
         //    순위는 이미 주기 스왑이 반영된 순서이므로, 주기 포함 번호는 더 좋은 그룹 가중치를 받는다.
@@ -506,26 +521,54 @@ public class LottoPatternAnalyzer {
             weight[n] *= (rank <= 15 ? TIER_TOP : rank <= 30 ? TIER_MID : TIER_BOT);
         }
 
+        // 필수 포함(간격3회 반복) 번호를 강한순(반복수 큰 순)으로 시드 후보에 정렬. 6개를 넘으면 앞 6개만.
+        List<Integer> seedAll = new ArrayList<>();
+        for (int m : (mustInclude == null ? Collections.<Integer>emptySet() : mustInclude)) {
+            if (seedAll.size() >= 6) break;
+            if (m >= 1 && m <= 45) seedAll.add(m);
+        }
+
         // 직전 회차 연속쌍(이월) 회피 집합
         Set<List<Integer>> latestConsecutive = new HashSet<>();
         int[] ln = latestDraw.nums;
         for (int i = 0; i < ln.length - 1; i++)
             if (ln[i + 1] == ln[i] + 1) latestConsecutive.add(Arrays.asList(ln[i], ln[i + 1]));
 
-        // 2) 가중 추출로 후보를 모아 필터 통과분만 수집 (충분히 모이거나 시도 소진까지)
+        // 2) 가중 추출로 후보 수집. 필수 포함 번호를 전부 강제하면 제약이 과해 게임이 안 나올 수 있으므로,
+        //    충분히 못 모으면 가장 약한 필수번호부터 한 개씩 줄여(폴백) 재시도한다(가능한 만큼 무조건 포함).
         Random rnd = new Random();
         Map<List<Integer>, Double> candidates = new HashMap<>(); // 조합 → 적합도
-        int attempts = 0;
-        while (candidates.size() < 2000 && attempts < 300000) {
-            attempts++;
-            List<Integer> game = weightedSampleWithoutReplacement(weight, 6, rnd);
-            if (game == null) break; // 추출 가능한 번호가 6개 미만
-            Collections.sort(game);
-            if (!filter.passes(game)) continue;
-            if (containsConsecutivePair(game, latestConsecutive)) continue;
-            if (maxLottoColumnCount(game) >= 3) continue; // 로또 용지 세로열 3개 이상 체크 회피
-            if (Collections.disjoint(game, cycleSet)) continue; // 주기300 번호 0개면 재생성
-            candidates.putIfAbsent(game, fitness(game, rankedNumbers, rankDistribution));
+        for (int forceCount = seedAll.size(); forceCount >= 0; forceCount--) {
+            List<Integer> seed = new ArrayList<>(seedAll.subList(0, forceCount));
+            double[] restWeight = weight.clone();
+            for (int m : seed) restWeight[m] = 0.0;
+            int sampleK = 6 - seed.size();
+            candidates.clear();
+            int attempts = 0;
+            boolean exhausted = false;
+            while (candidates.size() < 2000 && attempts < 300000) {
+                attempts++;
+                List<Integer> game = new ArrayList<>(seed); // 필수 포함 번호로 시작
+                if (sampleK > 0) {
+                    List<Integer> rest = weightedSampleWithoutReplacement(restWeight, sampleK, rnd);
+                    if (rest == null) { exhausted = true; break; } // 추출 가능한 번호가 부족
+                    game.addAll(rest);
+                }
+                Collections.sort(game);
+                if (!filter.passes(game)) continue;
+                if (containsConsecutivePair(game, latestConsecutive)) continue;
+                if (maxLottoColumnCount(game) >= 3) continue; // 로또 용지 세로열 3개 이상 체크 회피
+                if (Collections.disjoint(game, cycleSet)) continue; // 주기300 번호 0개면 재생성
+                candidates.putIfAbsent(game, fitness(game, rankedNumbers, rankDistribution));
+            }
+            // 이번 강제수로 requiredGames개를 채울 만큼 모였으면 확정(필수번호를 최대한 많이 유지).
+            if (candidates.size() >= requiredGames) {
+                if (forceCount < seedAll.size())
+                    System.out.printf("※ 간격3회 필수번호 %d개는 제약 충돌로 게임당 %d개만 강제 포함했습니다.\n",
+                            seedAll.size(), forceCount);
+                break;
+            }
+            if (exhausted && forceCount == 0) break;
         }
 
         // 3) 적합도 내림차순 정렬 후, 서로 2개 이상 다른 게임만 골라 상위 requiredGames개 채택
@@ -1060,6 +1103,195 @@ public class LottoPatternAnalyzer {
         System.out.println("==========================================================");
     }
 
+    // 진단: 대상 lo~hi 각 회차를 직전 데이터로 예측한 순위에서, 순위별(1~45) 추천 번호가
+    // 그 회차 당첨번호로 재출현한 횟수와 회차 목록을 집계한다. (파싱 가능한 형식으로 출력)
+    private static void runRankHits(List<LottoDraw> all, int lo, int hi) {
+        Map<Integer, Integer> idxOf = new HashMap<>();
+        for (int i = 0; i < all.size(); i++) idxOf.put(all.get(i).drawNo, i);
+
+        List<List<Integer>> hits = new ArrayList<>();
+        for (int r = 0; r < 45; r++) hits.add(new ArrayList<>());
+        int nDraws = 0;
+        for (int T = lo; T <= hi; T++) {
+            Integer idx = idxOf.get(T);
+            if (idx == null || idx < 1) continue;
+            List<LottoDraw> hist = all.subList(0, idx);
+            LottoDraw prev = all.get(idx - 1);
+            Set<Integer> win = all.get(idx).getWinningNumbers();
+            List<PatternAnalyzer> az = analyzersFor(hist);
+            Map<String, Double> w = computeAccuracyWeights(hist, WF_TRAIN_WEEKS);
+            Map<Integer, Double> sc = computeFinalScores(az, hist, prev, w, null);
+            Map<String, Double> wfDist = computeRankDistribution(hist, RANK_DIST_WEEKS, w, null);
+            String[] bw = bestWorstGroup(wfDist);
+            sc = applyRankBoost(sc, wfDist, bw[0], bw[1]);
+            List<Integer> ranked = applyCycleAdjacentSwap(rankByScore(sc), cycleNumbers(T, hist));
+            for (int r = 1; r <= 45; r++) if (win.contains(ranked.get(r - 1))) hits.get(r - 1).add(T);
+            nDraws++;
+        }
+
+        int total = 0; for (List<Integer> l : hits) total += l.size();
+        System.out.println("==========================================================");
+        System.out.printf("   순위별 당첨 재출현 통계 (대상 %d~%d, %d회)\n", lo, hi, nDraws);
+        System.out.println("==========================================================");
+        System.out.println("순위 | 적중 | 재출현 회차");
+        System.out.println("----------------------------------------------------------");
+        for (int r = 1; r <= 45; r++) {
+            List<Integer> l = hits.get(r - 1);
+            StringBuilder sb = new StringBuilder();
+            for (int t : l) { if (sb.length() > 0) sb.append(","); sb.append(t); }
+            System.out.printf("%2d위 | %d | %s\n", r, l.size(), l.isEmpty() ? "-" : sb.toString());
+        }
+        System.out.println("----------------------------------------------------------");
+        System.out.printf("총 재출현 %d개 (=%d회×6) · 순위당 평균 %.2f개 (무작위 기대 %.2f)\n",
+                total, nDraws, (double) total / 45, nDraws * 6.0 / 45);
+        System.out.println("==========================================================");
+
+        // ── 다음 회차(hi+1) 예측 순위 산정: 각 순위에 어떤 실제 번호가 놓이는지 매핑 ──
+        int nextDraw = hi + 1;
+        Integer lastIdx = idxOf.get(hi);
+        List<Integer> rankedNext = null;
+        if (lastIdx != null) {
+            List<LottoDraw> histN = all.subList(0, lastIdx + 1);
+            LottoDraw prevN = all.get(lastIdx);
+            List<PatternAnalyzer> azN = analyzersFor(histN);
+            Map<String, Double> wN = computeAccuracyWeights(histN, WF_TRAIN_WEEKS);
+            Map<Integer, Double> scN = computeFinalScores(azN, histN, prevN, wN, null);
+            Map<String, Double> distN = computeRankDistribution(histN, RANK_DIST_WEEKS, wN, null);
+            String[] bwN = bestWorstGroup(distN);
+            scN = applyRankBoost(scN, distN, bwN[0], bwN[1]);
+            rankedNext = applyCycleAdjacentSwap(rankByScore(scN), cycleNumbers(nextDraw, histN));
+        }
+
+        // ── 재출현 간격(차이수) 반복 분석 ──
+        //   각 순위의 재출현 회차 수열에서 인접 간격(=차이수)을 구해, 같은 간격이 ≥2회(반복 1번 이상) 나오는지 본다.
+        //   '다음간격' = nextDraw - 마지막재출현회차. 이 값이 과거 간격으로 이미 나온 적이 있으면(반복) 이번에도 재출현 가능성↑.
+        System.out.printf("   순위별 재출현 간격(차이수) 반복 분석 — 다음 회차 %d 예측\n", nextDraw);
+        System.out.println("==========================================================");
+        System.out.println("순위 | 번호 | 재출현간격(차이수)            | 반복간격(횟수)  | 다음간격 | 이번가능성");
+        System.out.println("----------------------------------------------------------");
+        List<int[]> strongCandidates = new ArrayList<>(); // {rank, number, priorCount, nextGap}
+        List<int[]> periodicRanks = new ArrayList<>();     // 반복 간격이 1번 이상 있는 순위 {rank, number}
+        for (int r = 1; r <= 45; r++) {
+            List<Integer> l = hits.get(r - 1);
+            int number = (rankedNext != null) ? rankedNext.get(r - 1) : 0;
+            if (l.size() < 2) {
+                System.out.printf("%2d위 | %2d | %-28s | %-14s | %6s | %s\n",
+                        r, number, l.isEmpty() ? "-" : "(간격없음)", "-", "-", "-");
+                continue;
+            }
+            // 인접 간격 산출
+            List<Integer> gaps = new ArrayList<>();
+            for (int i = 1; i < l.size(); i++) gaps.add(l.get(i) - l.get(i - 1));
+            // 간격별 등장 횟수
+            Map<Integer, Integer> gapCount = new LinkedHashMap<>();
+            for (int g : gaps) gapCount.merge(g, 1, Integer::sum);
+            // 반복(≥2회) 간격 문자열
+            StringBuilder rep = new StringBuilder();
+            boolean hasRepeat = false;
+            for (Map.Entry<Integer, Integer> e : gapCount.entrySet()) {
+                if (e.getValue() >= 2) {
+                    if (rep.length() > 0) rep.append(",");
+                    rep.append(e.getKey()).append("(").append(e.getValue()).append("회)");
+                    hasRepeat = true;
+                }
+            }
+            int nextGap = nextDraw - l.get(l.size() - 1);          // 이번에 재출현한다면 가질 간격
+            int priorCount = gapCount.getOrDefault(nextGap, 0);    // 그 간격이 과거에 나온 횟수
+            String poss = priorCount >= 3
+                    ? String.format("◎ 높음(간격 %d, 과거 %d회 반복)", nextGap, priorCount)
+                    : (hasRepeat ? "○ 주기보유" : "-");
+            StringBuilder gs = new StringBuilder();
+            for (int g : gaps) { if (gs.length() > 0) gs.append(","); gs.append(g); }
+            System.out.printf("%2d위 | %2d | %-28s | %-14s | %6d | %s\n",
+                    r, number, gs.toString(), hasRepeat ? rep.toString() : "-", nextGap, poss);
+            if (hasRepeat) periodicRanks.add(new int[]{r, number});
+            if (priorCount >= 3) strongCandidates.add(new int[]{r, number, priorCount, nextGap});
+        }
+        System.out.println("----------------------------------------------------------");
+        System.out.println("범례: 다음간격 = (다음회차 - 마지막재출현회차). 이 간격이 과거 재출현 간격으로 3회 이상 반복됐으면 ◎.");
+        System.out.println("==========================================================");
+
+        // ── 요약: 이번 회차 재출현 가능성이 있는 순위·번호 ──
+        System.out.printf("   [%d회차] 재출현 간격 반복으로 본 '이번에도 나올 가능성' 순위\n", nextDraw);
+        System.out.println("----------------------------------------------------------");
+        if (strongCandidates.isEmpty()) {
+            System.out.println("◎ 다음간격이 과거 간격으로 3회 이상 반복된 순위: 없음");
+        } else {
+            strongCandidates.sort((a, b) -> b[2] - a[2]); // 반복 횟수 많은 순
+            System.out.println("◎ 다음간격이 과거 간격으로 3회 이상 반복된 순위 (강한 후보):");
+            for (int[] c : strongCandidates)
+                System.out.printf("   - %2d위(번호 %2d): 다음간격 %d이(가) 과거 %d회 반복 → 이번 회차 재출현 가능성 높음\n",
+                        c[0], c[1], c[3], c[2]);
+        }
+        System.out.println();
+        StringBuilder pr = new StringBuilder();
+        for (int[] c : periodicRanks) {
+            if (pr.length() > 0) pr.append(", ");
+            pr.append(c[0]).append("위(").append(c[1]).append(")");
+        }
+        System.out.printf("○ 재출현 간격이 1번 이상 반복된 순위(주기 보유, 총 %d개): %s\n",
+                periodicRanks.size(), periodicRanks.isEmpty() ? "없음" : pr.toString());
+        System.out.println("==========================================================");
+    }
+
+    // 최근 window회 동안 walk-forward 순위로 본 순위별 재출현 회차에서, 인접 간격(차이수)을 구해
+    // '다음 회차까지의 간격(=nextDraw-마지막재출현)'이 과거에 3회 이상 반복된 순위의 다음회차 예측번호를 반환.
+    // (rankhits 진단의 ◎ '강한 후보'와 동일 기준 — 게임 생성 시 무조건 포함 대상)
+    private static Set<Integer> gapRepeatNumbers(List<LottoDraw> all, int window) {
+        if (all.isEmpty()) return Collections.emptySet();
+        int hi = all.get(all.size() - 1).drawNo;
+        int lo = hi - window + 1;
+        Map<Integer, Integer> idxOf = new HashMap<>();
+        for (int i = 0; i < all.size(); i++) idxOf.put(all.get(i).drawNo, i);
+
+        List<List<Integer>> hits = new ArrayList<>();
+        for (int r = 0; r < 45; r++) hits.add(new ArrayList<>());
+        for (int T = lo; T <= hi; T++) {
+            Integer idx = idxOf.get(T);
+            if (idx == null || idx < 1) continue;
+            List<LottoDraw> hist = all.subList(0, idx);
+            LottoDraw prev = all.get(idx - 1);
+            Set<Integer> win = all.get(idx).getWinningNumbers();
+            List<PatternAnalyzer> az = analyzersFor(hist);
+            Map<String, Double> w = computeAccuracyWeights(hist, WF_TRAIN_WEEKS);
+            Map<Integer, Double> sc = computeFinalScores(az, hist, prev, w, null);
+            Map<String, Double> wfDist = computeRankDistribution(hist, RANK_DIST_WEEKS, w, null);
+            String[] bw = bestWorstGroup(wfDist);
+            sc = applyRankBoost(sc, wfDist, bw[0], bw[1]);
+            List<Integer> ranked = applyCycleAdjacentSwap(rankByScore(sc), cycleNumbers(T, hist));
+            for (int r = 1; r <= 45; r++) if (win.contains(ranked.get(r - 1))) hits.get(r - 1).add(T);
+        }
+
+        // 다음 회차 예측 순위 (순위→번호 매핑)
+        int nextDraw = hi + 1;
+        int lastIdx = idxOf.get(hi);
+        List<LottoDraw> histN = all.subList(0, lastIdx + 1);
+        LottoDraw prevN = all.get(lastIdx);
+        List<PatternAnalyzer> azN = analyzersFor(histN);
+        Map<String, Double> wN = computeAccuracyWeights(histN, WF_TRAIN_WEEKS);
+        Map<Integer, Double> scN = computeFinalScores(azN, histN, prevN, wN, null);
+        Map<String, Double> distN = computeRankDistribution(histN, RANK_DIST_WEEKS, wN, null);
+        String[] bwN = bestWorstGroup(distN);
+        scN = applyRankBoost(scN, distN, bwN[0], bwN[1]);
+        List<Integer> rankedNext = applyCycleAdjacentSwap(rankByScore(scN), cycleNumbers(nextDraw, histN));
+
+        // (번호, 과거반복수) 수집 후 반복수 내림차순 → 강한 후보가 앞에 오도록 정렬해 반환.
+        List<int[]> cand = new ArrayList<>(); // {번호, priorCount}
+        for (int r = 1; r <= 45; r++) {
+            List<Integer> l = hits.get(r - 1);
+            if (l.size() < 2) continue;
+            Map<Integer, Integer> gapCount = new HashMap<>();
+            for (int i = 1; i < l.size(); i++) gapCount.merge(l.get(i) - l.get(i - 1), 1, Integer::sum);
+            int nextGap = nextDraw - l.get(l.size() - 1);
+            int prior = gapCount.getOrDefault(nextGap, 0);
+            if (prior >= 3) cand.add(new int[]{rankedNext.get(r - 1), prior});
+        }
+        cand.sort((a, b) -> b[1] - a[1]);
+        Set<Integer> result = new LinkedHashSet<>();
+        for (int[] c : cand) result.add(c[0]);
+        return result;
+    }
+
     // 진단: 목표 회차를 직전 데이터로 예측한 순위로, tier 가중 설정별 5게임을 trials회 생성해 평균 적중 비교.
     private static void runGameSim(List<LottoDraw> all, int target, int trials) {
         Map<Integer, Integer> idxOf = new HashMap<>();
@@ -1094,7 +1326,7 @@ public class LottoPatternAnalyzer {
             TIER_TOP = configs[c][0]; TIER_MID = configs[c][1]; TIER_BOT = configs[c][2];
             double sumTot = 0, sumCover = 0; int gamesWithHit = 0, totGames = 0;
             for (int t = 0; t < trials; t++) {
-                List<List<Integer>> games = generateDistributionGames(ranked, sc, wfDist, filter, prev, 5, cyc);
+                List<List<Integer>> games = generateDistributionGames(ranked, sc, wfDist, filter, prev, 5, cyc, Collections.<Integer>emptySet());
                 Set<Integer> covered = new HashSet<>();
                 for (List<Integer> g : games) {
                     int m = 0;

@@ -25,12 +25,55 @@ W, H = 12192000, 6858000  # 16:9 슬라이드 (EMU)
 
 
 # ── 1) Java 실행 → 콘솔 분석리포트 파싱 ───────────────────────────────────
-def run_analyzer():
-    p = subprocess.run(["java", "-cp", CP, "LottoPatternAnalyzer"],
+def run_analyzer(extra=None):
+    p = subprocess.run(["java", "-cp", CP, "LottoPatternAnalyzer"] + (extra or []),
                        cwd=ROOT, capture_output=True, text=True)
     if p.returncode != 0:
         sys.exit(f"Java 실행 실패:\n{p.stderr}")
     return p.stdout
+
+
+def parse_rankhits(out):
+    """rankhits 모드 출력 → (window, [(순위, 적중수, 회차리스트)...])
+    재출현 회차 표(파이프 2개)만 파싱. 간격 분석 표(파이프 5개)는 parse_rankgaps가 담당."""
+    win, rows = None, []
+    for ln in out.splitlines():
+        m = re.search(r"대상 (\d+)~(\d+),\s*(\d+)회", ln)
+        if m:
+            win = (int(m.group(1)), int(m.group(2)), int(m.group(3)))
+            continue
+        if ln.count("|") != 2:
+            continue
+        m = re.match(r"\s*(\d+)위\s*\|\s*(\d+)\s*\|\s*(.+)", ln)
+        if m:
+            draws = [int(x) for x in re.findall(r"\d+", m.group(3))]
+            rows.append((int(m.group(1)), int(m.group(2)), draws))
+    return win, rows
+
+
+def parse_rankgaps(out):
+    """rankhits의 간격(차이수) 반복 분석 출력 →
+       (rank_gaps {순위:(간격문자열, 다음간격, 가능성기호)}, candidates [(순위,번호,다음간격,과거반복수)], 주기보유수)"""
+    rank_gaps = {}
+    for ln in out.splitlines():
+        if ln.count("|") != 5:
+            continue
+        parts = [p.strip() for p in ln.split("|")]
+        m = re.match(r"(\d+)위", parts[0])
+        if not m:
+            continue
+        rk = int(m.group(1))
+        poss = parts[5]
+        ch = "◎" if poss.startswith("◎") else ("○" if poss.startswith("○") else "-")
+        rank_gaps[rk] = (parts[2], parts[4], ch)
+    cands = []
+    for ln in out.splitlines():
+        m = re.search(r"(\d+)위\(번호\s*(\d+)\):\s*다음간격\s*(\d+).*과거\s*(\d+)회", ln)
+        if m:
+            cands.append((int(m[1]), int(m[2]), int(m[3]), int(m[4])))
+    m = re.search(r"주기 보유, 총 (\d+)개", out)
+    periodic = int(m[1]) if m else 0
+    return rank_gaps, cands, periodic
 
 
 def parse(out):
@@ -293,6 +336,62 @@ def slide_games(r):
     return wrap_slide(sh)
 
 
+def slide_rankhits(win, rows, rank2num, next_no, rank_gaps, cands, periodic):
+    sh = []
+    fid = 2
+    n = win[2] if win else 0
+    rng = f"{win[0]}~{win[1]}회" if win else ""
+    exp = n * 6 / 45 if n else 0
+    sh.append(textbox(fid, "title", 400000, 200000, W - 800000, 650000,
+                      run(f"순위별 당첨 재출현 통계 + 간격(차이수) 반복 분석 (최근 {n}회 · {rng})", 1800, HDR, True))); fid += 1
+    note = (f"적중 = 그 순위 추천번호가 당첨이었던 횟수  ·  다음간격 = {next_no}회 − 마지막 재출현회차  ·  "
+            f"가능성 ◎ = 다음간격이 과거 3회↑ 반복 / ○ = 간격 주기보유 / − = 없음")
+    sh.append(textbox(fid, "sub", 400000, 760000, W - 800000, 360000,
+                      run(note, 1050, "808080"))); fid += 1
+
+    # ── 이번에도 나올 가능성 높음(◎) 강조 배너 ──
+    if cands:
+        cands_sorted = sorted(cands, key=lambda c: -c[3])
+        txt = "  ".join(f"{num}번(순위{rk}·다음간격{g}·과거{pc}회반복)" for (rk, num, g, pc) in cands_sorted)
+        banner = f"◎ {next_no}회 재출현 가능성 높음 (다음간격이 과거 3회 이상 반복): {txt}"
+        bcolor = "C00000"
+    else:
+        banner = f"◎ {next_no}회: 다음간격이 과거 3회 이상 반복된 순위 없음 (○ 주기보유 {periodic}개 참고)"
+        bcolor = "808080"
+    sh.append(textbox(fid, "banner", 400000, 1120000, W - 800000, 360000,
+                      run(banner, 1150, bcolor, True))); fid += 1
+
+    per = 15
+    blocks = [rows[i:i + per] for i in range(0, len(rows), per)]
+    cols = [440000, 480000, 440000, 1280000, 560000, 540000]  # 순위,번호,적중,간격(차이수),다음간격,가능성
+    cw = sum(cols)
+    gap = 220000
+    bx0 = (W - (3 * cw + 2 * gap)) // 2
+    pitch = cw + gap
+    for bi, blk in enumerate(blocks):
+        trows = [hdr_cells(["순위", "번호", "적중", "간격(차이수)", "다음간격", "가능성"])]
+        for (rk, cnt, ds) in blk:
+            hot = cnt >= 5
+            zero = cnt == 0
+            num = rank2num.get(rk, "")
+            gaps_str, nextgap, ch = rank_gaps.get(rk, ("-", "-", "-"))
+            poss_font = "C00000" if ch == "◎" else ("1F3864" if ch == "○" else "C0C0C0")
+            trows.append([
+                {"t": f"{rk}위", "sz": 820, "bold": rk <= 3},
+                {"t": f"{num}", "sz": 880, "bold": True,
+                 "fill": "FFF2CC" if rk <= 3 else None,
+                 "font": "BF8F00" if rk <= 3 else "1F3864"},
+                {"t": f"{cnt}", "sz": 820, "bold": True,
+                 "font": "C00000" if hot else ("C0C0C0" if zero else "1F3864")},
+                {"t": gaps_str, "sz": 640, "algn": "l", "font": "808080"},
+                {"t": nextgap, "sz": 820, "bold": True, "font": "1F3864"},
+                {"t": ch, "sz": 920, "bold": True,
+                 "fill": "FFF2CC" if ch == "◎" else None, "font": poss_font},
+            ])
+        sh.append(gtable(fid, f"rh{bi}", bx0 + bi * pitch, 1560000, cols, trows, row_h=300000)); fid += 1
+    return wrap_slide(sh)
+
+
 # ── 4) 정적 패키지 파트 ────────────────────────────────────────────────────
 def content_types(n_slides):
     slides = "".join(
@@ -448,7 +547,18 @@ def main():
     print(f"파싱: {r['next_no']}회 / z {len(r['z'])}행 / 분포 {len(r['dist'])}행 / "
           f"순위 {len(r['rank'])}행 / 게임 {len(r['games'])}")
 
-    slides = [slide_summary(r), slide_ranking(r), slide_games(r)]
+    # 순위별 재출현 통계 + 간격(차이수) 반복 분석 (최근 100회로 범위 확대)
+    hi = r["base_no"]; lo = hi - 99
+    rh_out = run_analyzer(["rankhits", str(lo), str(hi)])
+    rhwin, rhrows = parse_rankhits(rh_out)
+    rank_gaps, rh_cands, rh_periodic = parse_rankgaps(rh_out)
+    print(f"순위재출현: {rhwin[2] if rhwin else 0}회 / {len(rhrows)}순위 / "
+          f"◎후보 {len(rh_cands)}개 / ○주기 {rh_periodic}개")
+
+    rank2num = {int(t[0]): t[1] for t in r["rank"]}
+    slides = [slide_summary(r), slide_ranking(r), slide_games(r),
+              slide_rankhits(rhwin, rhrows, rank2num, r["next_no"],
+                             rank_gaps, rh_cands, rh_periodic)]
     parts = {
         "[Content_Types].xml": content_types(len(slides)),
         "_rels/.rels": RELS_ROOT,
