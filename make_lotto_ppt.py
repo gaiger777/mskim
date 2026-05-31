@@ -336,40 +336,47 @@ def slide_games(r):
     return wrap_slide(sh)
 
 
-def slide_rankhits(win, rows, rank2num, next_no, rank_gaps, cands, periodic):
-    sh = []
-    fid = 2
+def slides_rankhits(win, rows, rank2num, next_no, rank_gaps, cands, periodic):
+    """순위별 재출현 통계 + 간격(차이수·회차) 분석.
+    간격 문자열에 회차정보(차이(전회차→후회차))가 들어가 폭이 길어졌으므로, 간격 칸을
+    가로 전폭(단일 블록)으로 키우고 45순위를 15개씩 여러 페이지로 분할한다(좁은 칸 줄바꿈 폭주 방지)."""
+    out_slides = []
     n = win[2] if win else 0
     rng = f"{win[0]}~{win[1]}회" if win else ""
-    exp = n * 6 / 45 if n else 0
-    sh.append(textbox(fid, "title", 400000, 200000, W - 800000, 650000,
-                      run(f"순위별 당첨 재출현 통계 + 간격(차이수) 반복 분석 (최근 {n}회 · {rng})", 1800, HDR, True))); fid += 1
-    note = (f"적중 = 그 순위 추천번호가 당첨이었던 횟수  ·  다음간격 = {next_no}회 − 마지막 재출현회차  ·  "
-            f"가능성 ◎ = 다음간격이 과거 3회↑ 반복 / ○ = 간격 주기보유 / − = 없음")
-    sh.append(textbox(fid, "sub", 400000, 760000, W - 800000, 360000,
-                      run(note, 1050, "808080"))); fid += 1
-
-    # ── 이번에도 나올 가능성 높음(◎) 강조 배너 ──
-    if cands:
-        cands_sorted = sorted(cands, key=lambda c: -c[3])
-        txt = "  ".join(f"{num}번(순위{rk}·다음간격{g}·과거{pc}회반복)" for (rk, num, g, pc) in cands_sorted)
-        banner = f"◎ {next_no}회 재출현 가능성 높음 (다음간격이 과거 3회 이상 반복): {txt}"
-        bcolor = "C00000"
-    else:
-        banner = f"◎ {next_no}회: 다음간격이 과거 3회 이상 반복된 순위 없음 (○ 주기보유 {periodic}개 참고)"
-        bcolor = "808080"
-    sh.append(textbox(fid, "banner", 400000, 1120000, W - 800000, 360000,
-                      run(banner, 1150, bcolor, True))); fid += 1
-
     per = 15
     blocks = [rows[i:i + per] for i in range(0, len(rows), per)]
-    cols = [440000, 480000, 440000, 1280000, 560000, 540000]  # 순위,번호,적중,간격(차이수),다음간격,가능성
+    npage = len(blocks)
+    # 순위,번호,적중,간격(차이수·회차), 다음간격, 가능성 — 간격 칸을 전폭으로
+    cols = [600000, 620000, 600000, 8000000, 700000, 700000]
     cw = sum(cols)
-    gap = 220000
-    bx0 = (W - (3 * cw + 2 * gap)) // 2
-    pitch = cw + gap
+    bx = (W - cw) // 2
     for bi, blk in enumerate(blocks):
-        trows = [hdr_cells(["순위", "번호", "적중", "간격(차이수)", "다음간격", "가능성"])]
+        sh = []
+        fid = 2
+        page = f"  ({bi + 1}/{npage})" if npage > 1 else ""
+        sh.append(textbox(fid, "title", 400000, 200000, W - 800000, 650000,
+                          run(f"순위별 당첨 재출현 + 간격(차이수·회차) 분석 (최근 {n}회 · {rng}){page}",
+                              1700, HDR, True))); fid += 1
+        if bi == 0:
+            note = (f"적중 = 그 순위 추천번호가 당첨이었던 횟수  ·  간격(차이수) 형식: 차이(전회차→후회차)  ·  "
+                    f"다음간격 = {next_no}회 − 마지막 재출현회차  ·  ◎ = 다음간격 과거 3회↑ 반복 / ○ = 주기보유 / − = 없음")
+            sh.append(textbox(fid, "sub", 400000, 740000, W - 800000, 360000,
+                              run(note, 1000, "808080"))); fid += 1
+            if cands:
+                cands_sorted = sorted(cands, key=lambda c: -c[3])
+                txt = "  ".join(f"{num}번(순위{rk}·다음간격{g}·과거{pc}회반복)"
+                                for (rk, num, g, pc) in cands_sorted)
+                banner = f"◎ {next_no}회 재출현 가능성 높음 (다음간격이 과거 3회 이상 반복): {txt}"
+                bcolor = "C00000"
+            else:
+                banner = f"◎ {next_no}회: 다음간격이 과거 3회 이상 반복된 순위 없음 (○ 주기보유 {periodic}개 참고)"
+                bcolor = "808080"
+            sh.append(textbox(fid, "banner", 400000, 1150000, W - 800000, 360000,
+                              run(banner, 1100, bcolor, True))); fid += 1
+            ty = 1620000
+        else:
+            ty = 820000
+        trows = [hdr_cells(["순위", "번호", "적중", "간격(차이수) — 차이(전회차→후회차)", "다음간격", "가능성"])]
         for (rk, cnt, ds) in blk:
             hot = cnt >= 5
             zero = cnt == 0
@@ -377,19 +384,20 @@ def slide_rankhits(win, rows, rank2num, next_no, rank_gaps, cands, periodic):
             gaps_str, nextgap, ch = rank_gaps.get(rk, ("-", "-", "-"))
             poss_font = "C00000" if ch == "◎" else ("1F3864" if ch == "○" else "C0C0C0")
             trows.append([
-                {"t": f"{rk}위", "sz": 820, "bold": rk <= 3},
-                {"t": f"{num}", "sz": 880, "bold": True,
+                {"t": f"{rk}위", "sz": 850, "bold": rk <= 3},
+                {"t": f"{num}", "sz": 900, "bold": True,
                  "fill": "FFF2CC" if rk <= 3 else None,
                  "font": "BF8F00" if rk <= 3 else "1F3864"},
-                {"t": f"{cnt}", "sz": 820, "bold": True,
+                {"t": f"{cnt}", "sz": 850, "bold": True,
                  "font": "C00000" if hot else ("C0C0C0" if zero else "1F3864")},
-                {"t": gaps_str, "sz": 640, "algn": "l", "font": "808080"},
-                {"t": nextgap, "sz": 820, "bold": True, "font": "1F3864"},
-                {"t": ch, "sz": 920, "bold": True,
+                {"t": gaps_str, "sz": 700, "algn": "l", "font": "808080"},
+                {"t": nextgap, "sz": 850, "bold": True, "font": "1F3864"},
+                {"t": ch, "sz": 950, "bold": True,
                  "fill": "FFF2CC" if ch == "◎" else None, "font": poss_font},
             ])
-        sh.append(gtable(fid, f"rh{bi}", bx0 + bi * pitch, 1560000, cols, trows, row_h=300000)); fid += 1
-    return wrap_slide(sh)
+        sh.append(gtable(fid, f"rh{bi}", bx, ty, cols, trows, row_h=300000)); fid += 1
+        out_slides.append(wrap_slide(sh))
+    return out_slides
 
 
 # ── 4) 정적 패키지 파트 ────────────────────────────────────────────────────
@@ -556,9 +564,9 @@ def main():
           f"◎후보 {len(rh_cands)}개 / ○주기 {rh_periodic}개")
 
     rank2num = {int(t[0]): t[1] for t in r["rank"]}
-    slides = [slide_summary(r), slide_ranking(r), slide_games(r),
-              slide_rankhits(rhwin, rhrows, rank2num, r["next_no"],
-                             rank_gaps, rh_cands, rh_periodic)]
+    slides = [slide_summary(r), slide_ranking(r), slide_games(r)]
+    slides += slides_rankhits(rhwin, rhrows, rank2num, r["next_no"],
+                              rank_gaps, rh_cands, rh_periodic)
     parts = {
         "[Content_Types].xml": content_types(len(slides)),
         "_rels/.rels": RELS_ROOT,

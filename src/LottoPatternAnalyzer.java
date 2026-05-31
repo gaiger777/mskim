@@ -534,44 +534,104 @@ public class LottoPatternAnalyzer {
         for (int i = 0; i < ln.length - 1; i++)
             if (ln[i + 1] == ln[i] + 1) latestConsecutive.add(Arrays.asList(ln[i], ln[i + 1]));
 
-        // 2) 가중 추출로 후보 수집. 필수 포함 번호를 전부 강제하면 제약이 과해 게임이 안 나올 수 있으므로,
-        //    충분히 못 모으면 가장 약한 필수번호부터 한 개씩 줄여(폴백) 재시도한다(가능한 만큼 무조건 포함).
+        // 2) 게임당 강제 가능한 최대 개수(forceCount) 결정 — 강한 부분집합으로 충분한 후보가 모이는 한계.
+        //    필수번호 전부를 한 게임에 강제하면 제약 충돌로 게임이 안 나오므로, 줄여가며 한계를 찾는다.
         Random rnd = new Random();
-        Map<List<Integer>, Double> candidates = new HashMap<>(); // 조합 → 적합도
-        for (int forceCount = seedAll.size(); forceCount >= 0; forceCount--) {
-            List<Integer> seed = new ArrayList<>(seedAll.subList(0, forceCount));
-            double[] restWeight = weight.clone();
-            for (int m : seed) restWeight[m] = 0.0;
-            int sampleK = 6 - seed.size();
-            candidates.clear();
-            int attempts = 0;
-            boolean exhausted = false;
-            while (candidates.size() < 2000 && attempts < 300000) {
-                attempts++;
-                List<Integer> game = new ArrayList<>(seed); // 필수 포함 번호로 시작
-                if (sampleK > 0) {
-                    List<Integer> rest = weightedSampleWithoutReplacement(restWeight, sampleK, rnd);
-                    if (rest == null) { exhausted = true; break; } // 추출 가능한 번호가 부족
-                    game.addAll(rest);
-                }
-                Collections.sort(game);
-                if (!filter.passes(game)) continue;
-                if (containsConsecutivePair(game, latestConsecutive)) continue;
-                if (maxLottoColumnCount(game) >= 3) continue; // 로또 용지 세로열 3개 이상 체크 회피
-                if (Collections.disjoint(game, cycleSet)) continue; // 주기300 번호 0개면 재생성
-                candidates.putIfAbsent(game, fitness(game, rankedNumbers, rankDistribution));
-            }
-            // 이번 강제수로 requiredGames개를 채울 만큼 모였으면 확정(필수번호를 최대한 많이 유지).
-            if (candidates.size() >= requiredGames) {
-                if (forceCount < seedAll.size())
-                    System.out.printf("※ 간격3회 필수번호 %d개는 제약 충돌로 게임당 %d개만 강제 포함했습니다.\n",
-                            seedAll.size(), forceCount);
-                break;
-            }
-            if (exhausted && forceCount == 0) break;
+        int forceCount = seedAll.size();
+        for (; forceCount > 0; forceCount--) {
+            Map<List<Integer>, Double> probe = gatherCandidates(
+                    new ArrayList<>(seedAll.subList(0, forceCount)), weight, filter,
+                    latestConsecutive, cycleSet, rankedNumbers, rankDistribution, rnd, requiredGames, 300000);
+            if (probe.size() >= requiredGames) break;
         }
 
-        // 3) 적합도 내림차순 정렬 후, 서로 2개 이상 다른 게임만 골라 상위 requiredGames개 채택
+        List<List<Integer>> picked = new ArrayList<>();
+        if (forceCount >= seedAll.size() || forceCount == 0) {
+            // 필수번호 전체가 한 게임에 다 들어가거나(회전 불필요) 강제할 게 없으면, 단일 풀에서 적합도·다양성 추출.
+            Map<List<Integer>, Double> candidates = gatherCandidates(
+                    new ArrayList<>(seedAll.subList(0, forceCount)), weight, filter, latestConsecutive,
+                    cycleSet, rankedNumbers, rankDistribution, rnd, 2000, 300000);
+            picked = pickDiverse(candidates, requiredGames);
+        } else {
+            // 3) 회전: 게임마다 forceCount개의 '서로 다른' 부분집합을 순환창으로 강제 →
+            //    필수번호가 특정 강한 몇 개에 고정되지 않고 5게임 전체에 고루 등장한다.
+            int S = seedAll.size();
+            System.out.printf("※ 간격3회 필수번호 %d개는 제약 충돌로 게임당 %d개씩 회전 포함해 전 게임에 고루 배치합니다.\n",
+                    S, forceCount);
+            for (int g = 0; g < requiredGames; g++) {
+                // 순환창 부분집합: seedAll[g], seedAll[g+1], …(mod S) 중 forceCount개.
+                List<Integer> seed = new ArrayList<>();
+                for (int k = 0; k < forceCount; k++) seed.add(seedAll.get((g + k) % S));
+                Map<List<Integer>, Double> pool = gatherCandidates(
+                        seed, weight, filter, latestConsecutive, cycleSet,
+                        rankedNumbers, rankDistribution, rnd, 800, 200000);
+                // 이 부분집합으로 유효 게임이 없으면 가장 약한 강제부터 한 개씩 줄여 재시도.
+                for (int fc = forceCount - 1; pool.isEmpty() && fc >= 0; fc--)
+                    pool = gatherCandidates(new ArrayList<>(seed.subList(0, fc)), weight, filter,
+                            latestConsecutive, cycleSet, rankedNumbers, rankDistribution, rnd, 800, 200000);
+                if (pool.isEmpty()) continue;
+                final Map<List<Integer>, Double> fpool = pool;
+                List<List<Integer>> cand = new ArrayList<>(fpool.keySet());
+                cand.sort((a, b) -> Double.compare(fpool.get(b), fpool.get(a)));
+                List<Integer> choice = null;
+                for (List<Integer> game : cand) { // 적합도 높은 순으로, 기존과 2개↑ 다른 게임 우선
+                    if (picked.contains(game)) continue;
+                    boolean tooSimilar = false;
+                    for (List<Integer> p : picked) if (overlapCount(game, p) >= 5) { tooSimilar = true; break; }
+                    if (!tooSimilar) { choice = game; break; }
+                }
+                if (choice == null) // 다양성 만족 후보가 없으면 중복만 아니면 적합도 1위 채택
+                    for (List<Integer> game : cand) if (!picked.contains(game)) { choice = game; break; }
+                if (choice != null) picked.add(choice);
+            }
+            // 회전으로 requiredGames개를 못 채우면 강한 부분집합 풀로 보충.
+            if (picked.size() < requiredGames) {
+                Map<List<Integer>, Double> filler = gatherCandidates(
+                        new ArrayList<>(seedAll.subList(0, forceCount)), weight, filter, latestConsecutive,
+                        cycleSet, rankedNumbers, rankDistribution, rnd, 2000, 300000);
+                List<List<Integer>> fcand = new ArrayList<>(filler.keySet());
+                fcand.sort((a, b) -> Double.compare(filler.get(b), filler.get(a)));
+                for (List<Integer> gApp : fcand) {
+                    if (picked.size() >= requiredGames) break;
+                    if (!picked.contains(gApp)) picked.add(gApp);
+                }
+            }
+        }
+        return picked;
+    }
+
+    // 주어진 강제 포함(seed) 번호로 시작해 나머지를 가중 추출하고, 모든 게임 제약을 통과한 조합을
+    // (조합 → 적합도) 맵으로 maxCand개까지 수집한다. seed의 가중치는 0으로 빼 중복 추출을 막는다.
+    private static Map<List<Integer>, Double> gatherCandidates(
+            List<Integer> seed, double[] weight, GameFilter filter,
+            Set<List<Integer>> latestConsecutive, Set<Integer> cycleSet,
+            List<Integer> rankedNumbers, Map<String, Double> rankDistribution,
+            Random rnd, int maxCand, int maxAttempts) {
+        double[] restWeight = weight.clone();
+        for (int m : seed) restWeight[m] = 0.0;
+        int sampleK = 6 - seed.size();
+        Map<List<Integer>, Double> candidates = new HashMap<>();
+        int attempts = 0;
+        while (candidates.size() < maxCand && attempts < maxAttempts) {
+            attempts++;
+            List<Integer> game = new ArrayList<>(seed); // 필수 포함 번호로 시작
+            if (sampleK > 0) {
+                List<Integer> rest = weightedSampleWithoutReplacement(restWeight, sampleK, rnd);
+                if (rest == null) break; // 추출 가능한 번호가 부족
+                game.addAll(rest);
+            }
+            Collections.sort(game);
+            if (!filter.passes(game)) continue;
+            if (containsConsecutivePair(game, latestConsecutive)) continue;
+            if (maxLottoColumnCount(game) >= 3) continue; // 로또 용지 세로열 3개 이상 회피
+            if (Collections.disjoint(game, cycleSet)) continue; // 주기300 번호 0개면 재생성
+            candidates.putIfAbsent(game, fitness(game, rankedNumbers, rankDistribution));
+        }
+        return candidates;
+    }
+
+    // 적합도 내림차순으로, 서로 2개 이상 다른 게임을 우선해 requiredGames개를 고른다(모자라면 적합도순 보충).
+    private static List<List<Integer>> pickDiverse(Map<List<Integer>, Double> candidates, int requiredGames) {
         List<List<Integer>> sorted = new ArrayList<>(candidates.keySet());
         sorted.sort((a, b) -> Double.compare(candidates.get(b), candidates.get(a)));
         List<List<Integer>> picked = new ArrayList<>();
@@ -581,7 +641,6 @@ public class LottoPatternAnalyzer {
             for (List<Integer> p : picked) if (overlapCount(g, p) >= 5) { tooSimilar = true; break; }
             if (!tooSimilar) picked.add(g);
         }
-        // 다양성 제약으로 모자라면 적합도 순으로 채움
         for (List<Integer> g : sorted) {
             if (picked.size() >= requiredGames) break;
             if (!picked.contains(g)) picked.add(g);
@@ -1167,7 +1226,7 @@ public class LottoPatternAnalyzer {
         //   '다음간격' = nextDraw - 마지막재출현회차. 이 값이 과거 간격으로 이미 나온 적이 있으면(반복) 이번에도 재출현 가능성↑.
         System.out.printf("   순위별 재출현 간격(차이수) 반복 분석 — 다음 회차 %d 예측\n", nextDraw);
         System.out.println("==========================================================");
-        System.out.println("순위 | 번호 | 재출현간격(차이수)            | 반복간격(횟수)  | 다음간격 | 이번가능성");
+        System.out.println("순위 | 번호 | 재출현간격(차이수) — 간격(전회차→후회차)        | 반복간격(횟수)  | 다음간격 | 이번가능성");
         System.out.println("----------------------------------------------------------");
         List<int[]> strongCandidates = new ArrayList<>(); // {rank, number, priorCount, nextGap}
         List<int[]> periodicRanks = new ArrayList<>();     // 반복 간격이 1번 이상 있는 순위 {rank, number}
@@ -1175,8 +1234,8 @@ public class LottoPatternAnalyzer {
             List<Integer> l = hits.get(r - 1);
             int number = (rankedNext != null) ? rankedNext.get(r - 1) : 0;
             if (l.size() < 2) {
-                System.out.printf("%2d위 | %2d | %-28s | %-14s | %6s | %s\n",
-                        r, number, l.isEmpty() ? "-" : "(간격없음)", "-", "-", "-");
+                System.out.printf("%2d위 | %2d | %-48s | %-14s | %6s | %s\n",
+                        r, number, l.isEmpty() ? "-" : "(간격없음, 재출현 " + l.get(0) + ")", "-", "-", "-");
                 continue;
             }
             // 인접 간격 산출
@@ -1201,8 +1260,13 @@ public class LottoPatternAnalyzer {
                     ? String.format("◎ 높음(간격 %d, 과거 %d회 반복)", nextGap, priorCount)
                     : (hasRepeat ? "○ 주기보유" : "-");
             StringBuilder gs = new StringBuilder();
-            for (int g : gaps) { if (gs.length() > 0) gs.append(","); gs.append(g); }
-            System.out.printf("%2d위 | %2d | %-28s | %-14s | %6d | %s\n",
+            // 간격(차이수)에 어느 회차 사이의 간격인지 회차정보를 함께 표기: 간격(전회차→후회차)
+            for (int i = 1; i < l.size(); i++) {
+                if (gs.length() > 0) gs.append(",");
+                gs.append(l.get(i) - l.get(i - 1))
+                  .append("(").append(l.get(i - 1)).append("→").append(l.get(i)).append(")");
+            }
+            System.out.printf("%2d위 | %2d | %-48s | %-14s | %6d | %s\n",
                     r, number, gs.toString(), hasRepeat ? rep.toString() : "-", nextGap, poss);
             if (hasRepeat) periodicRanks.add(new int[]{r, number});
             if (priorCount >= 3) strongCandidates.add(new int[]{r, number, priorCount, nextGap});
