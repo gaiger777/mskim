@@ -18,7 +18,6 @@ import sys
 import zipfile
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
-OUT_PPTX = os.path.join(ROOT, "로또_분석리포트.pptx")
 CP = os.path.join(ROOT, "out", "production", "mskim")
 GAP_REPEAT_WINDOW = 195
 
@@ -775,10 +774,12 @@ def main():
         parts[f"ppt/slides/slide{i}.xml"] = xml
         parts[f"ppt/slides/_rels/slide{i}.xml.rels"] = SLIDE_RELS
 
-    with zipfile.ZipFile(OUT_PPTX, "w", zipfile.ZIP_DEFLATED) as z:
+    out_name = f"로또_{r['next_no']}회차_분석리포트.pptx" if r["next_no"] else "로또_분석리포트.pptx"
+    out_pptx = os.path.join(ROOT, out_name)
+    with zipfile.ZipFile(out_pptx, "w", zipfile.ZIP_DEFLATED) as z:
         for name, data in parts.items():
             z.writestr(name, data)
-    print(f"생성 완료: {OUT_PPTX} ({len(slides)} 슬라이드)")
+    print(f"생성 완료: {out_pptx} ({len(slides)} 슬라이드)")
 
 
 if __name__ == "__main__":
