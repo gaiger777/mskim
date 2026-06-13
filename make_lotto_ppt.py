@@ -113,6 +113,8 @@ def parse_gapcut(out):
         if ln.startswith("##GAPCUTLIVE##"):
             sec = "live"
             continue
+        if ln.startswith("##GAPHIT##"):
+            break  # 회차별 상세는 parse_gaphit가 처리
         if "@@" not in ln:
             continue
         p = ln.split("@@")
@@ -124,6 +126,48 @@ def parse_gapcut(out):
         elif sec == "live":
             live[int(p[0])] = [] if p[1].strip() == "-" else [int(x) for x in p[1].split(",") if x]
     return info, rows, live
+
+
+def parse_pathit(out):
+    """customrank ##PATHIT## → [(패턴, [(회차, [번호...]) ...]) ...]."""
+    rows, insec = [], False
+    for ln in out.splitlines():
+        if ln.startswith("##PATHIT##"):
+            insec = True
+            continue
+        if not insec:
+            continue
+        if "@@" not in ln:
+            if ln.startswith("##"):
+                break
+            continue
+        pat, detail = ln.split("@@", 1)
+        hits = []
+        if detail.strip() != "-":
+            for tok in detail.split():
+                rd, nums = tok.split(":")
+                hits.append((int(rd), [int(x) for x in nums.split(",")]))
+        rows.append((pat.strip(), hits))
+    return rows
+
+
+def parse_gaphit(out):
+    """gapcut ##GAPHIT## → [(회차, [(번호, 반복수) ...], [적중번호 ...]) ...]."""
+    rows, insec = [], False
+    for ln in out.splitlines():
+        if ln.startswith("##GAPHIT##"):
+            insec = True
+            continue
+        if not insec or "@@" not in ln:
+            continue
+        p = ln.split("@@")
+        if not p[0].strip().isdigit():
+            continue
+        marks = [] if p[1].strip() == "-" else [(int(a), int(b)) for a, b in
+                                                (t.split(":") for t in p[1].split(","))]
+        hits = [] if p[2].strip() == "-" else [int(x) for x in p[2].split(",")]
+        rows.append((int(p[0]), marks, hits))
+    return rows
 
 
 def parse(out):
@@ -571,6 +615,71 @@ def slide_gapcut(info, rows, live):
     return wrap_slide(sh)
 
 
+def slide_pathit(rows, next_no):
+    """상위 패턴(distinct)이 1218~1227 각 회차에 실제로 맞춘 회차·번호."""
+    if not rows:
+        return None
+    sh, fid = [], 2
+    sh.append(textbox(fid, "title", 400000, 200000, W - 800000, 650000,
+                      run("과거 10회 상위 패턴 — 회차별 적중 상세", 2100, HDR, True))); fid += 1
+    sh.append(textbox(fid, "sub", 400000, 800000, W - 800000, 360000,
+                      run(f"{next_no}회 예측에 쓰인 상위 패턴들이 1218~1227 각 회차에 실제로 맞춘 번호 (회차:번호)",
+                          1100, "808080"))); fid += 1
+    cols = [2500000, 8100000]
+    bx = (W - sum(cols)) // 2
+    trows = [hdr_cells(["패턴", "적중 회차:번호 (회당)"])]
+    for pat, hits in rows:
+        if hits:
+            txt = f"({len(hits)}회)  " + "   ".join(f"{rd}:{','.join(map(str, nums))}" for rd, nums in hits)
+        else:
+            txt = "-"
+        trows.append([
+            {"t": pat, "sz": 950, "algn": "l", "bold": True},
+            {"t": txt, "sz": 880, "algn": "l", "font": "C00000" if hits else "C0C0C0"},
+        ])
+    sh.append(gtable(fid, "pht", bx, 1350000, cols, trows, row_h=380000)); fid += 1
+    foot = "※ 1218~1227 사후 실측 — 과거 적중일 뿐 미래 적중 보장 아님(로또는 독립 난수)."
+    sh.append(textbox(fid, "foot", 400000, H - 560000, W - 800000, 460000,
+                      run(foot, 1000, "A6A6A6"))); fid += 1
+    return wrap_slide(sh)
+
+
+def slide_gaphit(rows, next_no):
+    """◎ 반복임계 — 1218~1227 회차별 ◎번호(반복수)와 실제 적중번호. 적중은 빨강."""
+    if not rows:
+        return None
+    sh, fid = [], 2
+    sh.append(textbox(fid, "title", 400000, 200000, W - 800000, 650000,
+                      run("◎ 반복임계 — 회차별 ◎번호·반복수·적중", 2000, HDR, True))); fid += 1
+    sh.append(textbox(fid, "sub", 400000, 800000, W - 800000, 400000,
+                      run("1218~1227 각 회차의 ◎번호(반복수≥4)와 실제 당첨된 번호(빨강). "
+                          "반복수가 N이면 컷오프 N까지의 ◎에 포함됩니다.", 1100, "808080"))); fid += 1
+    cols = [1100000, 7800000, 1700000]
+    bx = (W - sum(cols)) // 2
+    trows = [hdr_cells(["회차", "◎번호 : 반복수", "적중번호"])]
+    for rd, marks, hits in rows:
+        hset = set(hits)
+        rr = []
+        for i, (n, c) in enumerate(marks):
+            if i:
+                rr.append(run(", ", 800, "808080"))
+            red = n in hset
+            rr.append(run(f"{n}:{c}", 800, "C00000" if red else "333333", bold=red))
+        runs_xml = "".join(rr) if marks else run("-", 800, "808080")
+        trows.append([
+            {"t": f"{rd}", "sz": 900, "bold": True},
+            {"runs": runs_xml, "sz": 800, "algn": "l"},
+            {"t": ", ".join(map(str, hits)) if hits else "-", "sz": 950, "bold": True,
+             "font": "C00000" if hits else "C0C0C0"},
+        ])
+    sh.append(gtable(fid, "ght", bx, 1320000, cols, trows, row_h=330000)); fid += 1
+    foot = ("※ 반복수 N = 그 다음간격이 과거 N회 반복. N=4·5·6·7 컷오프 포함 여부가 갈립니다. "
+            "1218~1227 사후 실측 — 미래 적중 보장 아님.")
+    sh.append(textbox(fid, "foot", 400000, H - 540000, W - 800000, 440000,
+                      run(foot, 1000, "A6A6A6"))); fid += 1
+    return wrap_slide(sh)
+
+
 # ── 4) 정적 패키지 파트 ────────────────────────────────────────────────────
 def content_types(n_slides):
     slides = "".join(
@@ -755,9 +864,15 @@ def main():
     pp = slide_patpred(patpred)
     if pp:
         slides += [pp]
+    ph = slide_pathit(parse_pathit(cr_out), r["next_no"])
+    if ph:
+        slides += [ph]
     gc = slide_gapcut(gc_info, gc_rows, gc_live)
     if gc:
         slides += [gc]
+    gh = slide_gaphit(parse_gaphit(gc_out), r["next_no"])
+    if gh:
+        slides += [gh]
     parts = {
         "[Content_Types].xml": content_types(len(slides)),
         "_rels/.rels": RELS_ROOT,

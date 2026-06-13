@@ -1354,7 +1354,12 @@ public class LottoPatternAnalyzer {
 
     // 임계(cutoff)를 인자로 받는 버전 — 백테스트에서 컷오프 스윕에 재사용.
     private static Set<Integer> gapRepeatNumbers(List<LottoDraw> all, int window, int cutoff) {
-        if (all.isEmpty()) return Collections.emptySet();
+        return new LinkedHashSet<>(gapRepeatCounts(all, window, cutoff).keySet());
+    }
+
+    // 위와 동일하되 번호→반복수(priorCount) 맵을 반복수 내림차순으로 반환.
+    private static LinkedHashMap<Integer, Integer> gapRepeatCounts(List<LottoDraw> all, int window, int cutoff) {
+        if (all.isEmpty()) return new LinkedHashMap<>();
         int hi = all.get(all.size() - 1).drawNo;
         int lo = hi - window + 1;
         Map<Integer, Integer> idxOf = new HashMap<>();
@@ -1403,8 +1408,8 @@ public class LottoPatternAnalyzer {
             if (prior >= cutoff) cand.add(new int[]{rankedNext.get(r - 1), prior});
         }
         cand.sort((a, b) -> b[1] - a[1]);
-        Set<Integer> result = new LinkedHashSet<>();
-        for (int[] c : cand) result.add(c[0]);
+        LinkedHashMap<Integer, Integer> result = new LinkedHashMap<>();
+        for (int[] c : cand) result.putIfAbsent(c[0], c[1]); // 같은 번호면 큰 반복수(먼저 정렬됨) 유지
         return result;
     }
 
@@ -1465,30 +1470,61 @@ public class LottoPatternAnalyzer {
         int window = GAP_REPEAT_WINDOW;
         int nextNo = all.get(all.size() - 1).drawNo + 1;
 
+        // 회차당 1회만 ◎번호→반복수 계산(반복수≥4 전부)해 컷오프 4개가 공유 — 무거운 walk-forward를 4배 줄임.
+        List<Integer> rounds = new ArrayList<>();
+        List<LinkedHashMap<Integer, Integer>> perRound = new ArrayList<>();
+        List<Set<Integer>> perWin = new ArrayList<>();
+        for (int T = lo; T <= hi; T++) {
+            Integer idx = idxOf.get(T);
+            if (idx == null || idx < 1) continue;
+            rounds.add(T);
+            perRound.add(gapRepeatCounts(all.subList(0, idx), window, 4)); // [T-창, T-1] 창
+            perWin.add(all.get(idx).getWinningNumbers());
+        }
+        int R = rounds.size();
+
         System.out.printf("%n##GAPCUT## 대상 %d~%d, 창 %d회, 예측회차 %d, 무작위기대 %.1f%%%n",
                 lo, hi, window, nextNo, 100.0 * 6 / 45);
         System.out.println("컷오프@@◎총수@@적중@@회당◎@@적중률");
         for (int cutoff = 4; cutoff <= 7; cutoff++) {
-            int total = 0, hit = 0, rounds = 0;
-            for (int T = lo; T <= hi; T++) {
-                Integer idx = idxOf.get(T);
-                if (idx == null || idx < 1) continue;
-                rounds++;
-                Set<Integer> omark = gapRepeatNumbers(all.subList(0, idx), window, cutoff); // [T-창, T-1] 창
-                Set<Integer> win = all.get(idx).getWinningNumbers();
-                total += omark.size();
-                for (int n : omark) if (win.contains(n)) hit++;
+            int total = 0, hit = 0;
+            for (int r = 0; r < R; r++) {
+                Set<Integer> win = perWin.get(r);
+                for (Map.Entry<Integer, Integer> e : perRound.get(r).entrySet()) {
+                    if (e.getValue() >= cutoff) { total++; if (win.contains(e.getKey())) hit++; }
+                }
             }
             double rate = total > 0 ? 100.0 * hit / total : 0;
             System.out.printf("%d@@%d@@%d@@%.2f@@%.1f%n",
-                    cutoff, total, hit, (double) total / Math.max(1, rounds), rate);
+                    cutoff, total, hit, (double) total / Math.max(1, R), rate);
         }
         // 라이브: 각 컷오프별 다음회차(nextNo) ◎ 예측번호.
+        LinkedHashMap<Integer, Integer> liveCounts = gapRepeatCounts(all, window, 4);
         System.out.println("##GAPCUTLIVE##");
         for (int cutoff = 4; cutoff <= 7; cutoff++) {
-            Set<Integer> omark = new TreeSet<>(gapRepeatNumbers(all, window, cutoff));
+            TreeSet<Integer> omark = new TreeSet<>();
+            for (Map.Entry<Integer, Integer> e : liveCounts.entrySet())
+                if (e.getValue() >= cutoff) omark.add(e.getKey());
             System.out.printf("%d@@%s%n", cutoff,
                     omark.isEmpty() ? "-" : omark.toString().replaceAll("[\\[\\] ]", ""));
+        }
+        // 회차별 ◎번호(반복수)와 적중번호 상세 — 반복수로 어느 컷오프에 드는지 한 표로 읽힘.
+        System.out.println("##GAPHIT##");
+        for (int r = 0; r < R; r++) {
+            Set<Integer> win = perWin.get(r);
+            TreeMap<Integer, Integer> sorted = new TreeMap<>(perRound.get(r));
+            StringBuilder marks = new StringBuilder(), hits = new StringBuilder();
+            for (Map.Entry<Integer, Integer> e : sorted.entrySet()) {
+                if (marks.length() > 0) marks.append(",");
+                marks.append(e.getKey()).append(":").append(e.getValue());
+                if (win.contains(e.getKey())) {
+                    if (hits.length() > 0) hits.append(",");
+                    hits.append(e.getKey());
+                }
+            }
+            System.out.printf("%d@@%s@@%s%n", rounds.get(r),
+                    marks.length() == 0 ? "-" : marks.toString(),
+                    hits.length() == 0 ? "-" : hits.toString());
         }
     }
 
@@ -1620,6 +1656,7 @@ public class LottoPatternAnalyzer {
         // ── 다음회차 예측: 상위 패턴 두 지표(적중회차 비율 / lift) 기준 — Python PPT 파싱용 ──
         int nextNo = all.get(all.size() - 1).drawNo + 1;
         String[] metricNames = {"적중회차비율", "lift"};
+        LinkedHashSet<Integer> topIdx = new LinkedHashSet<>(); // 두 지표 top5 합집합(distinct)
         for (int mi = 0; mi < 2; mi++) {
             final int fmi = mi;
             List<int[]> sorted = new ArrayList<>(rows);
@@ -1641,6 +1678,7 @@ public class LottoPatternAnalyzer {
             int topN = Math.min(5, sorted.size());
             for (int k = 0; k < topN; k++) {
                 int[] e = sorted.get(k);
+                topIdx.add(e[0]);
                 Set<Integer> pred = new TreeSet<>(pats.get(e[0]).apply(all));
                 for (int x : pred) votes.merge(x, 1, Integer::sum);
                 double lift = e[2] > 0 ? e[1] / (e[2] * BASE) : 0;
@@ -1652,6 +1690,24 @@ public class LottoPatternAnalyzer {
             pool.sort((a, b) -> votes.get(b) != votes.get(a) ? votes.get(b) - votes.get(a) : a - b);
             System.out.printf("##POOL## %s%n", pool.stream()
                     .map(n -> n + ":" + votes.get(n)).collect(java.util.stream.Collectors.joining(" ")));
+        }
+
+        // 상위 패턴(distinct)별 회차별 적중 상세 — 회차:맞춘번호.
+        System.out.println("##PATHIT##");
+        for (int pi : topIdx) {
+            StringBuilder sb = new StringBuilder();
+            for (int r = 0; r < R; r++) {
+                Set<Integer> c = pats.get(pi).apply(all.subList(0, idxs.get(r)));
+                List<Integer> h = new ArrayList<>();
+                for (int x : c) if (wins.get(r).contains(x)) h.add(x);
+                if (!h.isEmpty()) {
+                    Collections.sort(h);
+                    if (sb.length() > 0) sb.append(" ");
+                    sb.append(all.get(idxs.get(r)).drawNo).append(":")
+                      .append(h.toString().replaceAll("[\\[\\] ]", ""));
+                }
+            }
+            System.out.printf("%s@@%s%n", pats.get(pi).name(), sb.length() == 0 ? "-" : sb.toString());
         }
     }
 
