@@ -531,7 +531,7 @@ def slide_patpred(blocks):
     sh.append(textbox(fid, "title", 400000, 200000, W - 800000, 650000,
                       run(f"{next_no}회 예측 — 과거 10회 최고 적중 패턴 기준", 2100, HDR, True))); fid += 1
     sh.append(textbox(fid, "sub", 400000, 800000, W - 800000, 360000,
-                      run("1218~1227 각 회차를 직전 데이터로 예측한 패턴 성적 상위 5개 → 그 패턴들의 "
+                      run(f"{next_no-10}~{next_no-1} 각 회차를 직전 데이터로 예측한 패턴 성적 상위 5개 → 그 패턴들의 "
                           f"{next_no}회 후보 (괄호=여러 패턴이 공통 출력한 번호)", 1100, "808080"))); fid += 1
 
     metric_label = {"적중회차비율": "① 적중회차 비율 기준 (10회 중 ≥1개 적중한 회차 수)",
@@ -558,7 +558,7 @@ def slide_patpred(blocks):
                           run("▶ 상위 패턴 후보 풀: ", 1050, "1F3864", True)
                           + run(pool_txt, 1050, "333333"))); fid += 1
 
-    foot = ("※ 1218~1227 사후(in-sample) 과적합 결과 — 62개 패턴 중 이 구간에서 우연히 잘 맞은 컷일 뿐, "
+    foot = (f"※ {next_no-10}~{next_no-1} 사후(in-sample) 과적합 결과 — 62개 패턴 중 이 구간에서 우연히 잘 맞은 컷일 뿐, "
             f"{next_no}회 적중을 보장하지 않습니다(로또는 독립 난수).")
     sh.append(textbox(fid, "foot", 400000, H - 620000, W - 800000, 500000,
                       run(foot, 1000, "A6A6A6"))); fid += 1
@@ -627,7 +627,7 @@ def slide_pathit(rows, patpred, next_no):
     sh.append(textbox(fid, "title", 400000, 200000, W - 800000, 650000,
                       run("과거 10회 상위 패턴 — 회차별 적중 상세", 2100, HDR, True))); fid += 1
     sh.append(textbox(fid, "sub", 400000, 800000, W - 800000, 360000,
-                      run(f"상위 패턴의 {next_no}회 예측번호 + 1218~1227 각 회차에 실제로 맞춘 번호 (회차:번호)",
+                      run(f"상위 패턴의 {next_no}회 예측번호 + {next_no-10}~{next_no-1} 각 회차에 실제로 맞춘 번호 (회차:번호)",
                           1100, "808080"))); fid += 1
     cols = [2400000, 1700000, 6400000]
     bx = (W - sum(cols)) // 2
@@ -644,7 +644,7 @@ def slide_pathit(rows, patpred, next_no):
             {"t": txt, "sz": 880, "algn": "l", "font": "C00000" if hits else "C0C0C0"},
         ])
     sh.append(gtable(fid, "pht", bx, 1350000, cols, trows, row_h=380000)); fid += 1
-    foot = "※ 1218~1227 사후 실측 — 과거 적중일 뿐 미래 적중 보장 아님(로또는 독립 난수)."
+    foot = f"※ {next_no-10}~{next_no-1} 사후 실측 — 과거 적중일 뿐 미래 적중 보장 아님(로또는 독립 난수)."
     sh.append(textbox(fid, "foot", 400000, H - 560000, W - 800000, 460000,
                       run(foot, 1000, "A6A6A6"))); fid += 1
     return wrap_slide(sh)
@@ -658,7 +658,7 @@ def slide_gaphit(rows, next_no):
     sh.append(textbox(fid, "title", 400000, 200000, W - 800000, 650000,
                       run("◎ 반복임계 — 회차별 ◎번호·반복수·적중", 2000, HDR, True))); fid += 1
     sh.append(textbox(fid, "sub", 400000, 800000, W - 800000, 400000,
-                      run("1218~1227 각 회차의 ◎번호(반복수≥4)와 실제 당첨된 번호(빨강). "
+                      run(f"{next_no-10}~{next_no-1} 각 회차의 ◎번호(반복수≥4)와 실제 당첨된 번호(빨강). "
                           "반복수가 N이면 컷오프 N까지의 ◎에 포함됩니다.", 1100, "808080"))); fid += 1
     cols = [1300000, 7600000, 1700000]
     bx = (W - sum(cols)) // 2
@@ -700,7 +700,7 @@ def slide_gaphit(rows, next_no):
         ])
     sh.append(gtable(fid, "ght", bx, 1320000, cols, trows, row_h=300000)); fid += 1
     foot = ("※ 반복수 N = 그 다음간격이 과거 N회 반복. N=4·5·6·7 컷오프 포함 여부가 갈립니다. "
-            "1218~1227 사후 실측 — 미래 적중 보장 아님.")
+            f"{next_no-10}~{next_no-1} 사후 실측 — 미래 적중 보장 아님.")
     sh.append(textbox(fid, "foot", 400000, H - 540000, W - 800000, 440000,
                       run(foot, 1000, "A6A6A6"))); fid += 1
     return wrap_slide(sh)
