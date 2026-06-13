@@ -615,26 +615,32 @@ def slide_gapcut(info, rows, live):
     return wrap_slide(sh)
 
 
-def slide_pathit(rows, next_no):
-    """상위 패턴(distinct)이 1218~1227 각 회차에 실제로 맞춘 회차·번호."""
+def slide_pathit(rows, patpred, next_no):
+    """상위 패턴(distinct)의 1228 예측번호 + 1218~1227 각 회차에 실제로 맞춘 회차·번호."""
     if not rows:
         return None
+    pred_of = {}
+    for b in patpred:
+        for (rk, pat, hr, avg, lift, cands) in b["rows"]:
+            pred_of.setdefault(pat, cands)
     sh, fid = [], 2
     sh.append(textbox(fid, "title", 400000, 200000, W - 800000, 650000,
                       run("과거 10회 상위 패턴 — 회차별 적중 상세", 2100, HDR, True))); fid += 1
     sh.append(textbox(fid, "sub", 400000, 800000, W - 800000, 360000,
-                      run(f"{next_no}회 예측에 쓰인 상위 패턴들이 1218~1227 각 회차에 실제로 맞춘 번호 (회차:번호)",
+                      run(f"상위 패턴의 {next_no}회 예측번호 + 1218~1227 각 회차에 실제로 맞춘 번호 (회차:번호)",
                           1100, "808080"))); fid += 1
-    cols = [2500000, 8100000]
+    cols = [2400000, 1700000, 6400000]
     bx = (W - sum(cols)) // 2
-    trows = [hdr_cells(["패턴", "적중 회차:번호 (회당)"])]
+    trows = [hdr_cells(["패턴", f"{next_no}예측", "적중 회차:번호 (회당)"])]
     for pat, hits in rows:
         if hits:
             txt = f"({len(hits)}회)  " + "   ".join(f"{rd}:{','.join(map(str, nums))}" for rd, nums in hits)
         else:
             txt = "-"
+        cands = pred_of.get(pat, [])
         trows.append([
             {"t": pat, "sz": 950, "algn": "l", "bold": True},
+            {"t": ", ".join(map(str, cands)) if cands else "-", "sz": 950, "bold": True, "font": "1F3864"},
             {"t": txt, "sz": 880, "algn": "l", "font": "C00000" if hits else "C0C0C0"},
         ])
     sh.append(gtable(fid, "pht", bx, 1350000, cols, trows, row_h=380000)); fid += 1
@@ -654,10 +660,30 @@ def slide_gaphit(rows, next_no):
     sh.append(textbox(fid, "sub", 400000, 800000, W - 800000, 400000,
                       run("1218~1227 각 회차의 ◎번호(반복수≥4)와 실제 당첨된 번호(빨강). "
                           "반복수가 N이면 컷오프 N까지의 ◎에 포함됩니다.", 1100, "808080"))); fid += 1
-    cols = [1100000, 7800000, 1700000]
+    cols = [1300000, 7600000, 1700000]
     bx = (W - sum(cols)) // 2
     trows = [hdr_cells(["회차", "◎번호 : 반복수", "적중번호"])]
+    # 다음회차(next_no) 예측행을 맨 위에 강조 배치.
+    pred, hist = None, []
     for rd, marks, hits in rows:
+        if rd == next_no:
+            pred = (rd, marks)
+        else:
+            hist.append((rd, marks, hits))
+    if pred:
+        rd, marks = pred
+        rr = []
+        for i, (n, c) in enumerate(marks):
+            if i:
+                rr.append(run(", ", 800, "1F3864"))
+            rr.append(run(f"{n}:{c}", 800, "1F3864", bold=True))
+        runs_xml = "".join(rr) if marks else run("-", 800, "808080")
+        trows.append([
+            {"t": f"{rd} 예측", "sz": 900, "bold": True, "fill": "FFF2CC", "font": "C00000"},
+            {"runs": runs_xml, "sz": 800, "algn": "l", "fill": "FFF2CC"},
+            {"t": "(예측)", "sz": 900, "font": "1F3864", "fill": "FFF2CC"},
+        ])
+    for rd, marks, hits in hist:
         hset = set(hits)
         rr = []
         for i, (n, c) in enumerate(marks):
@@ -672,7 +698,7 @@ def slide_gaphit(rows, next_no):
             {"t": ", ".join(map(str, hits)) if hits else "-", "sz": 950, "bold": True,
              "font": "C00000" if hits else "C0C0C0"},
         ])
-    sh.append(gtable(fid, "ght", bx, 1320000, cols, trows, row_h=330000)); fid += 1
+    sh.append(gtable(fid, "ght", bx, 1320000, cols, trows, row_h=300000)); fid += 1
     foot = ("※ 반복수 N = 그 다음간격이 과거 N회 반복. N=4·5·6·7 컷오프 포함 여부가 갈립니다. "
             "1218~1227 사후 실측 — 미래 적중 보장 아님.")
     sh.append(textbox(fid, "foot", 400000, H - 540000, W - 800000, 440000,
@@ -864,7 +890,7 @@ def main():
     pp = slide_patpred(patpred)
     if pp:
         slides += [pp]
-    ph = slide_pathit(parse_pathit(cr_out), r["next_no"])
+    ph = slide_pathit(parse_pathit(cr_out), patpred, r["next_no"])
     if ph:
         slides += [ph]
     gc = slide_gapcut(gc_info, gc_rows, gc_live)

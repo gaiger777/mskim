@@ -1510,6 +1510,14 @@ public class LottoPatternAnalyzer {
         }
         // 회차별 ◎번호(반복수)와 적중번호 상세 — 반복수로 어느 컷오프에 드는지 한 표로 읽힘.
         System.out.println("##GAPHIT##");
+        // 다음회차(nextNo) 예측행: ◎번호(반복수), 적중칸은 미래라 '-'.
+        TreeMap<Integer, Integer> liveSorted = new TreeMap<>(liveCounts);
+        StringBuilder lm = new StringBuilder();
+        for (Map.Entry<Integer, Integer> e : liveSorted.entrySet()) {
+            if (lm.length() > 0) lm.append(",");
+            lm.append(e.getKey()).append(":").append(e.getValue());
+        }
+        System.out.printf("%d@@%s@@-%n", nextNo, lm.length() == 0 ? "-" : lm.toString());
         for (int r = 0; r < R; r++) {
             Set<Integer> win = perWin.get(r);
             TreeMap<Integer, Integer> sorted = new TreeMap<>(perRound.get(r));
