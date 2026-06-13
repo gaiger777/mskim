@@ -101,6 +101,32 @@ def parse_patpred(out):
     return blocks
 
 
+def parse_gapcut(out):
+    """gapcut 출력 → (info, rows[{cut,total,hit,avg,rate}], live{cut:[번호]})."""
+    info, rows, live, sec = {}, [], {}, None
+    for ln in out.splitlines():
+        m = re.search(r"##GAPCUT## 대상 (\d+)~(\d+), 창 (\d+)회, 예측회차 (\d+), 무작위기대 ([\d.]+)%", ln)
+        if m:
+            info = {"lo": int(m[1]), "hi": int(m[2]), "win": int(m[3]),
+                    "next": int(m[4]), "rand": m[5]}
+            sec = "bt"
+            continue
+        if ln.startswith("##GAPCUTLIVE##"):
+            sec = "live"
+            continue
+        if "@@" not in ln:
+            continue
+        p = ln.split("@@")
+        if not p[0].strip().isdigit():
+            continue
+        if sec == "bt" and len(p) == 5:
+            rows.append({"cut": int(p[0]), "total": int(p[1]), "hit": int(p[2]),
+                         "avg": p[3].strip(), "rate": p[4].strip()})
+        elif sec == "live":
+            live[int(p[0])] = [] if p[1].strip() == "-" else [int(x) for x in p[1].split(",") if x]
+    return info, rows, live
+
+
 def parse(out):
     r = {}
     m = re.search(r"기준 회차:\s*(\d+)회", out)
@@ -146,12 +172,15 @@ def esc(s):
     return str(s).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
-def cell(text, fill=None, font="333333", bold=False, sz=1100, border=True, algn="ctr"):
-    runs = ""
-    if text != "":
+def cell(text, fill=None, font="333333", bold=False, sz=1100, border=True, algn="ctr", runs_xml=None):
+    if runs_xml is not None:        # 멀티런(부분 색상) 셀
+        runs = runs_xml
+    elif text != "":
         runs = (f'<a:r><a:rPr lang="ko-KR" sz="{sz}" b="{1 if bold else 0}">'
                 f'<a:solidFill><a:srgbClr val="{font}"/></a:solidFill></a:rPr>'
                 f'<a:t>{esc(text)}</a:t></a:r>')
+    else:
+        runs = ""
     bd = ('<a:lnL w="6350"><a:solidFill><a:srgbClr val="BBBBBB"/></a:solidFill></a:lnL>'
           '<a:lnR w="6350"><a:solidFill><a:srgbClr val="BBBBBB"/></a:solidFill></a:lnR>'
           '<a:lnT w="6350"><a:solidFill><a:srgbClr val="BBBBBB"/></a:solidFill></a:lnT>'
@@ -178,7 +207,7 @@ def gtable(fid, name, x, y, col_w, rows, row_h=210000):
     for row in rows:
         tcs = "".join(cell(c.get("t", ""), fill=c.get("fill"), font=c.get("font", "333333"),
                            bold=c.get("bold", False), sz=c.get("sz", 900),
-                           algn=c.get("algn", "ctr")) for c in row)
+                           algn=c.get("algn", "ctr"), runs_xml=c.get("runs")) for c in row)
         trs += f'<a:tr h="{row_h}">{tcs}</a:tr>'
     tbl = f'<a:tbl><a:tblPr firstRow="1" bandRow="1"/><a:tblGrid>{grid}</a:tblGrid>{trs}</a:tbl>'
     return graphic_frame(fid, name, x, y, sum(col_w), row_h * len(rows), tbl)
@@ -217,6 +246,20 @@ def run(text, sz, color="000000", bold=False):
     return (f'<a:r><a:rPr lang="ko-KR" sz="{sz}" b="{1 if bold else 0}">'
             f'<a:solidFill><a:srgbClr val="{color}"/></a:solidFill></a:rPr>'
             f'<a:t>{esc(text)}</a:t></a:r>')
+
+
+def gap_runs(gaps_str, nextgap, sz=700):
+    """간격(차이수) 문자열을 토큰별 run으로 쪼개, 다음간격과 같은 차이수(=반복된 간격)만 빨강·굵게."""
+    if not gaps_str or gaps_str == "-":
+        return run(gaps_str or "-", sz, "808080")
+    out = []
+    for i, tok in enumerate(gaps_str.split(",")):
+        m = re.match(r"\s*(\d+)\(", tok)
+        rep = bool(m) and m.group(1) == str(nextgap)
+        if i:
+            out.append(run(",", sz, "808080"))
+        out.append(run(tok, sz, "C00000" if rep else "808080", bold=rep))
+    return "".join(out)
 
 
 def wrap_slide(shapes):
@@ -393,7 +436,7 @@ def slides_rankhits(win, rows, rank2num, next_no, rank_gaps, cands, periodic):
                               1700, HDR, True))); fid += 1
         if bi == 0:
             note = (f"적중 = 그 순위 추천번호가 당첨이었던 횟수  ·  간격(차이수) 형식: 차이(전회차→후회차)  ·  "
-                    f"다음간격 = {next_no}회 − 마지막 재출현회차  ·  ◎ = 다음간격 과거 5회↑ 반복 / ○ = 주기보유 / − = 없음")
+                    f"다음간격 = {next_no}회 − 마지막 재출현회차  ·  ◎ = 다음간격이 과거 5회 이상 재출현(반복) / − = 아님")
             sh.append(textbox(fid, "sub", 400000, 740000, W - 800000, 360000,
                               run(note, 1000, "808080"))); fid += 1
             if cands:
@@ -416,7 +459,9 @@ def slides_rankhits(win, rows, rank2num, next_no, rank_gaps, cands, periodic):
             zero = cnt == 0
             num = rank2num.get(rk, "")
             gaps_str, nextgap, ch = rank_gaps.get(rk, ("-", "-", "-"))
-            poss_font = "C00000" if ch == "◎" else ("1F3864" if ch == "○" else "C0C0C0")
+            # 다음간격이 과거 5회 이상 재출현(반복)한 순위만 ◎(빨강), 나머지(주기보유 ○ 포함)는 −.
+            mark = "◎" if ch == "◎" else "−"
+            poss_font = "C00000" if mark == "◎" else "C0C0C0"
             trows.append([
                 {"t": f"{rk}위", "sz": 850, "bold": rk <= 3},
                 {"t": f"{num}", "sz": 900, "bold": True,
@@ -424,10 +469,10 @@ def slides_rankhits(win, rows, rank2num, next_no, rank_gaps, cands, periodic):
                  "font": "BF8F00" if rk <= 3 else "1F3864"},
                 {"t": f"{cnt}", "sz": 850, "bold": True,
                  "font": "C00000" if hot else ("C0C0C0" if zero else "1F3864")},
-                {"t": gaps_str, "sz": 700, "algn": "l", "font": "808080"},
+                {"runs": gap_runs(gaps_str, nextgap, sz=700), "sz": 700, "algn": "l"},
                 {"t": nextgap, "sz": 850, "bold": True, "font": "1F3864"},
-                {"t": ch, "sz": 950, "bold": True,
-                 "fill": "FFF2CC" if ch == "◎" else None, "font": poss_font},
+                {"t": mark, "sz": 950, "bold": True,
+                 "fill": "FFF2CC" if mark == "◎" else None, "font": poss_font},
             ])
         sh.append(gtable(fid, f"rh{bi}", bx, ty, cols, trows, row_h=300000)); fid += 1
         out_slides.append(wrap_slide(sh))
@@ -472,6 +517,56 @@ def slide_patpred(blocks):
 
     foot = ("※ 1218~1227 사후(in-sample) 과적합 결과 — 62개 패턴 중 이 구간에서 우연히 잘 맞은 컷일 뿐, "
             f"{next_no}회 적중을 보장하지 않습니다(로또는 독립 난수).")
+    sh.append(textbox(fid, "foot", 400000, H - 620000, W - 800000, 500000,
+                      run(foot, 1000, "A6A6A6"))); fid += 1
+    return wrap_slide(sh)
+
+
+def slide_gapcut(info, rows, live):
+    """◎(간격반복) 임계 N을 4~7로 스윕한 과거 10회 적중률 백테스트. 분모까지 표기."""
+    if not rows:
+        return None
+    sh, fid = [], 2
+    next_no = info.get("next", "")
+    sh.append(textbox(fid, "title", 400000, 200000, W - 800000, 650000,
+                      run(f"{next_no}회 ◎ 반복임계 스윕 — 과거 10회 적중률 백테스트", 2000, HDR, True))); fid += 1
+    sh.append(textbox(fid, "sub", 400000, 800000, W - 800000, 430000,
+                      run(f"◎ 기준 = 다음간격이 과거 N회 이상 반복. N을 4~7로 바꿔 {info['lo']}~{info['hi']} 각 회차를 "
+                          f"직전 {info['win']}회 창으로 예측 → ◎ 번호가 실제 당첨에 든 비율(번호 기준). "
+                          f"무작위 기대 {info['rand']}%", 1100, "808080"))); fid += 1
+
+    cols = [1400000, 1700000, 1100000, 1700000, 3100000]
+    bx = (W - sum(cols)) // 2
+    trows = [hdr_cells(["반복 N회", "◎ 총수(분모)", "적중", "적중률", f"{next_no}회 ◎ 예측번호"])]
+    valid = [r for r in rows if r["total"] >= 5]
+    best_rate = max((float(r["rate"]) for r in valid), default=None)
+    for r in rows:
+        small = r["total"] < 5
+        is_best = (not small) and best_rate is not None and abs(float(r["rate"]) - best_rate) < 1e-9
+        rate_txt = "표본부족" if small else f"{r['rate']}%"
+        ln = live.get(r["cut"], [])
+        trows.append([
+            {"t": f"{r['cut']}회", "sz": 1050, "bold": True},
+            {"t": str(r["total"]), "sz": 1050, "font": "C0C0C0" if small else "333333"},
+            {"t": str(r["hit"]), "sz": 1050},
+            {"t": rate_txt, "sz": 1050, "bold": is_best,
+             "font": "C00000" if is_best else ("C0C0C0" if small else "333333"),
+             "fill": "FFF2CC" if is_best else None},
+            {"t": ", ".join(str(n) for n in ln) if ln else "-", "sz": 950, "algn": "l", "font": "1F3864"},
+        ])
+    sh.append(gtable(fid, "gct", bx, 1380000, cols, trows, row_h=380000)); fid += 1
+
+    cy = 1380000 + 380000 * 5 + 250000
+    if valid:
+        b = [r for r in valid if abs(float(r["rate"]) - best_rate) < 1e-9][0]
+        msg = (f"▶ 분모 5건 이상 중 최고 적중률: N={b['cut']}회 ({b['hit']}/{b['total']} = {b['rate']}%)  ·  "
+               f"{next_no}회 해당 ◎ 예측번호: {', '.join(str(n) for n in live.get(b['cut'], [])) or '-'}")
+    else:
+        msg = "▶ 모든 컷오프의 ◎ 표본이 5건 미만 — 적중률 비교 불가(표본부족)"
+    sh.append(textbox(fid, "msg", bx, cy, sum(cols), 500000, run(msg, 1150, "1F3864", True))); fid += 1
+
+    foot = ("※ n=10 사후(in-sample) 스윕 — 4개 중 '최고'를 고르는 건 다중비교 과적합이고, 분모가 작은 컷오프의 "
+            f"높은 %는 우연입니다. {next_no}회 적중을 보장하지 않습니다(로또는 독립 난수).")
     sh.append(textbox(fid, "foot", 400000, H - 620000, W - 800000, 500000,
                       run(foot, 1000, "A6A6A6"))); fid += 1
     return wrap_slide(sh)
@@ -647,6 +742,11 @@ def main():
     print(f"패턴예측: {len(patpred)}블록 / "
           + " · ".join(f"{b['metric']} {len(b['rows'])}패턴·풀{len(b['pool'])}" for b in patpred))
 
+    # ◎ 반복임계(4~7) 스윕 적중률 백테스트
+    gc_out = run_analyzer(["gapcut", str(base - 9), str(base)])
+    gc_info, gc_rows, gc_live = parse_gapcut(gc_out)
+    print("간격컷스윕: " + " ".join(f"N{x['cut']}={x['hit']}/{x['total']}" for x in gc_rows))
+
     rank2num = {int(t[0]): t[1] for t in r["rank"]}
     slides = [slide_summary(r)]
     slides += slides_ranking(r)
@@ -656,6 +756,9 @@ def main():
     pp = slide_patpred(patpred)
     if pp:
         slides += [pp]
+    gc = slide_gapcut(gc_info, gc_rows, gc_live)
+    if gc:
+        slides += [gc]
     parts = {
         "[Content_Types].xml": content_types(len(slides)),
         "_rels/.rels": RELS_ROOT,

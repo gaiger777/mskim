@@ -184,6 +184,16 @@ public class LottoPatternAnalyzer {
             return;
         }
 
+        // 진단 모드: ◎(간격반복) 임계(cutoff)를 4~7로 스윕하며 lo~hi 적중률 백테스트(창=GAP_REPEAT_WINDOW).
+        //   (java ... LottoPatternAnalyzer gapcut [lo] [hi])  기본 최근 10회
+        if (args.length > 0 && args[0].equals("gapcut")) {
+            int hi = args.length > 2 ? Integer.parseInt(args[2]) : drawHistory.get(drawHistory.size() - 1).drawNo;
+            int lo = args.length > 1 ? Integer.parseInt(args[1]) : hi - 9;
+            GPPatternMiner.injectIntoEngine(drawHistory); // 라이브 rankhits ◎와 동일 패턴 풀(일관성)
+            runGapCut(drawHistory, lo, hi);
+            return;
+        }
+
         // GP 진화 패턴을 커스텀 패턴 풀에 주입 (엔진/게임/PPT 자동 반영). 1회만 수행.
         GPPatternMiner.injectIntoEngine(drawHistory);
 
@@ -1293,7 +1303,7 @@ public class LottoPatternAnalyzer {
             }
             int nextGap = nextDraw - l.get(l.size() - 1);          // 이번에 재출현한다면 가질 간격
             int priorCount = gapCount.getOrDefault(nextGap, 0);    // 그 간격이 과거에 나온 횟수
-            String poss = priorCount >= 3
+            String poss = priorCount >= 5
                     ? String.format("◎ 높음(간격 %d, 과거 %d회 반복)", nextGap, priorCount)
                     : (hasRepeat ? "○ 주기보유" : "-");
             StringBuilder gs = new StringBuilder();
@@ -1306,7 +1316,7 @@ public class LottoPatternAnalyzer {
             System.out.printf("%2d위 | %2d | %-48s | %-14s | %6d | %s\n",
                     r, number, gs.toString(), hasRepeat ? rep.toString() : "-", nextGap, poss);
             if (hasRepeat) periodicRanks.add(new int[]{r, number});
-            if (priorCount >= 3) strongCandidates.add(new int[]{r, number, priorCount, nextGap});
+            if (priorCount >= 5) strongCandidates.add(new int[]{r, number, priorCount, nextGap});
         }
         System.out.println("----------------------------------------------------------");
         System.out.println("범례: 다음간격 = (다음회차 - 마지막재출현회차). 이 간격이 과거 재출현 간격으로 5회 이상 반복됐으면 ◎.");
@@ -1339,6 +1349,11 @@ public class LottoPatternAnalyzer {
     // '다음 회차까지의 간격(=nextDraw-마지막재출현)'이 과거에 5회 이상 반복된 순위의 다음회차 예측번호를 반환.
     // (rankhits 진단의 ◎ '강한 후보'와 동일 기준 — 게임 생성 시 무조건 포함 대상)
     private static Set<Integer> gapRepeatNumbers(List<LottoDraw> all, int window) {
+        return gapRepeatNumbers(all, window, 5);
+    }
+
+    // 임계(cutoff)를 인자로 받는 버전 — 백테스트에서 컷오프 스윕에 재사용.
+    private static Set<Integer> gapRepeatNumbers(List<LottoDraw> all, int window, int cutoff) {
         if (all.isEmpty()) return Collections.emptySet();
         int hi = all.get(all.size() - 1).drawNo;
         int lo = hi - window + 1;
@@ -1385,7 +1400,7 @@ public class LottoPatternAnalyzer {
             for (int i = 1; i < l.size(); i++) gapCount.merge(l.get(i) - l.get(i - 1), 1, Integer::sum);
             int nextGap = nextDraw - l.get(l.size() - 1);
             int prior = gapCount.getOrDefault(nextGap, 0);
-            if (prior >= 5) cand.add(new int[]{rankedNext.get(r - 1), prior});
+            if (prior >= cutoff) cand.add(new int[]{rankedNext.get(r - 1), prior});
         }
         cand.sort((a, b) -> b[1] - a[1]);
         Set<Integer> result = new LinkedHashSet<>();
@@ -1440,6 +1455,41 @@ public class LottoPatternAnalyzer {
         System.out.printf("무작위 기대(동일 풀크기): 회당 평균 적중 ≈ %.2f개\n", avgPool * 6.0 / 45.0);
         System.out.println("※ 로또는 독립 난수 — 평균 적중이 무작위 기대를 유의하게 넘지 못하면 예측력 없음(노이즈).");
         System.out.println("==========================================================");
+    }
+
+    // 진단: ◎(다음간격이 과거 N회 이상 반복) 임계 N을 4~7로 스윕하며, lo~hi 각 회차를 직전 데이터([T-창,T-1])로
+    //       예측해 ◎ 번호가 실제 당첨에 든 비율(번호기준)을 백테스트. 라이브와 동일 창(GAP_REPEAT_WINDOW)·로직 재사용.
+    private static void runGapCut(List<LottoDraw> all, int lo, int hi) {
+        Map<Integer, Integer> idxOf = new HashMap<>();
+        for (int i = 0; i < all.size(); i++) idxOf.put(all.get(i).drawNo, i);
+        int window = GAP_REPEAT_WINDOW;
+        int nextNo = all.get(all.size() - 1).drawNo + 1;
+
+        System.out.printf("%n##GAPCUT## 대상 %d~%d, 창 %d회, 예측회차 %d, 무작위기대 %.1f%%%n",
+                lo, hi, window, nextNo, 100.0 * 6 / 45);
+        System.out.println("컷오프@@◎총수@@적중@@회당◎@@적중률");
+        for (int cutoff = 4; cutoff <= 7; cutoff++) {
+            int total = 0, hit = 0, rounds = 0;
+            for (int T = lo; T <= hi; T++) {
+                Integer idx = idxOf.get(T);
+                if (idx == null || idx < 1) continue;
+                rounds++;
+                Set<Integer> omark = gapRepeatNumbers(all.subList(0, idx), window, cutoff); // [T-창, T-1] 창
+                Set<Integer> win = all.get(idx).getWinningNumbers();
+                total += omark.size();
+                for (int n : omark) if (win.contains(n)) hit++;
+            }
+            double rate = total > 0 ? 100.0 * hit / total : 0;
+            System.out.printf("%d@@%d@@%d@@%.2f@@%.1f%n",
+                    cutoff, total, hit, (double) total / Math.max(1, rounds), rate);
+        }
+        // 라이브: 각 컷오프별 다음회차(nextNo) ◎ 예측번호.
+        System.out.println("##GAPCUTLIVE##");
+        for (int cutoff = 4; cutoff <= 7; cutoff++) {
+            Set<Integer> omark = new TreeSet<>(gapRepeatNumbers(all, window, cutoff));
+            System.out.printf("%d@@%s%n", cutoff,
+                    omark.isEmpty() ? "-" : omark.toString().replaceAll("[\\[\\] ]", ""));
+        }
     }
 
     // 진단: 대각합 전체 / 끝수 곱집합 각각의 '회차 내 생성 중복수'별 적중 확률.
