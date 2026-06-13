@@ -20,6 +20,7 @@ import zipfile
 ROOT = os.path.dirname(os.path.abspath(__file__))
 OUT_PPTX = os.path.join(ROOT, "로또_분석리포트.pptx")
 CP = os.path.join(ROOT, "out", "production", "mskim")
+GAP_REPEAT_WINDOW = 195
 
 W, H = 12192000, 6858000  # 16:9 슬라이드 (EMU)
 
@@ -74,6 +75,30 @@ def parse_rankgaps(out):
     m = re.search(r"주기 보유, 총 (\d+)개", out)
     periodic = int(m[1]) if m else 0
     return rank_gaps, cands, periodic
+
+
+def parse_patpred(out):
+    """customrank의 다음회차 예측 섹션(##NEXT##/행@@/##POOL##) → 지표별 블록 리스트.
+       각 블록: {next, metric, rows:[(순위,패턴,적중회차,회당평균,lift,[후보])], pool:[(번호,투표수)]}"""
+    blocks, cur = [], None
+    for ln in out.splitlines():
+        m = re.search(r"##NEXT## (\d+)회 예측 — 지표:(\S+)", ln)
+        if m:
+            cur = {"next": int(m[1]), "metric": m[2], "rows": [], "pool": []}
+            blocks.append(cur)
+            continue
+        if cur is not None and "@@" in ln:
+            p = ln.split("@@")
+            if len(p) == 6 and p[0].strip().isdigit():
+                cands = [int(x) for x in p[5].split()] if p[5].strip() else []
+                cur["rows"].append((int(p[0]), p[1].strip(), p[2].strip(),
+                                    p[3].strip(), p[4].strip(), cands))
+            continue
+        m = re.search(r"##POOL## (.+)", ln)
+        if m and cur is not None:
+            cur["pool"] = [(int(a), int(b)) for a, b in
+                           (t.split(":") for t in m.group(1).split())]
+    return blocks
 
 
 def parse(out):
@@ -368,21 +393,21 @@ def slides_rankhits(win, rows, rank2num, next_no, rank_gaps, cands, periodic):
                               1700, HDR, True))); fid += 1
         if bi == 0:
             note = (f"적중 = 그 순위 추천번호가 당첨이었던 횟수  ·  간격(차이수) 형식: 차이(전회차→후회차)  ·  "
-                    f"다음간격 = {next_no}회 − 마지막 재출현회차  ·  ◎ = 다음간격 과거 3회↑ 반복 / ○ = 주기보유 / − = 없음")
+                    f"다음간격 = {next_no}회 − 마지막 재출현회차  ·  ◎ = 다음간격 과거 5회↑ 반복 / ○ = 주기보유 / − = 없음")
             sh.append(textbox(fid, "sub", 400000, 740000, W - 800000, 360000,
                               run(note, 1000, "808080"))); fid += 1
             if cands:
                 cands_sorted = sorted(cands, key=lambda c: -c[3])
-                txt = "  ".join(f"{num}번(순위{rk}·다음간격{g}·과거{pc}회반복)"
-                                for (rk, num, g, pc) in cands_sorted)
-                banner = f"◎ {next_no}회 재출현 가능성 높음 (다음간격이 과거 3회 이상 반복): {txt}"
+                # 번호만 한 줄로 압축(순위·간격·반복 상세는 아래 표에서 확인). 배너가 표와 겹치지 않도록.
+                nums_only = ", ".join(str(num) for (rk, num, g, pc) in cands_sorted)
+                banner = f"◎ {next_no}회 재출현 유력 번호 ({len(cands_sorted)}개, 다음간격 과거 5회↑ 반복): {nums_only}"
                 bcolor = "C00000"
             else:
-                banner = f"◎ {next_no}회: 다음간격이 과거 3회 이상 반복된 순위 없음 (○ 주기보유 {periodic}개 참고)"
+                banner = f"◎ {next_no}회: 다음간격이 과거 5회 이상 반복된 순위 없음 (○ 주기보유 {periodic}개 참고)"
                 bcolor = "808080"
-            sh.append(textbox(fid, "banner", 400000, 1150000, W - 800000, 360000,
-                              run(banner, 1100, bcolor, True))); fid += 1
-            ty = 1620000
+            sh.append(textbox(fid, "banner", 400000, 1170000, W - 800000, 500000,
+                              run(banner, 1000, bcolor, True))); fid += 1
+            ty = 1740000
         else:
             ty = 820000
         trows = [hdr_cells(["순위", "번호", "적중", "간격(차이수) — 차이(전회차→후회차)", "다음간격", "가능성"])]
@@ -407,6 +432,49 @@ def slides_rankhits(win, rows, rank2num, next_no, rank_gaps, cands, periodic):
         sh.append(gtable(fid, f"rh{bi}", bx, ty, cols, trows, row_h=300000)); fid += 1
         out_slides.append(wrap_slide(sh))
     return out_slides
+
+
+def slide_patpred(blocks):
+    """과거 10회(1218~1227) 패턴별 성적 상위 5개 → 다음회차 예측. 두 지표(적중회차·lift)를 좌우로."""
+    if not blocks:
+        return None
+    sh, fid = [], 2
+    next_no = blocks[0]["next"]
+    sh.append(textbox(fid, "title", 400000, 200000, W - 800000, 650000,
+                      run(f"{next_no}회 예측 — 과거 10회 최고 적중 패턴 기준", 2100, HDR, True))); fid += 1
+    sh.append(textbox(fid, "sub", 400000, 800000, W - 800000, 360000,
+                      run("1218~1227 각 회차를 직전 데이터로 예측한 패턴 성적 상위 5개 → 그 패턴들의 "
+                          f"{next_no}회 후보 (괄호=여러 패턴이 공통 출력한 번호)", 1100, "808080"))); fid += 1
+
+    metric_label = {"적중회차비율": "① 적중회차 비율 기준 (10회 중 ≥1개 적중한 회차 수)",
+                    "lift": "② lift(효율) 기준 (후보 1개당 적중률, 1.0 = 무작위)"}
+    xs = [400000, 6300000]
+    tblw = [500000, 1700000, 900000, 700000, 1750000]
+    for bi, blk in enumerate(blocks[:2]):
+        x = xs[bi]
+        sh.append(textbox(fid, f"h{bi}", x, 1300000, sum(tblw), 320000,
+                          run(metric_label.get(blk["metric"], blk["metric"]), 1200, "C00000", True))); fid += 1
+        rows = [hdr_cells(["순위", "패턴", "적중회차", "lift", f"{next_no}후보"], sz=800)]
+        for (rk, pat, hr, avg, lift, cands) in blk["rows"]:
+            rows.append([
+                {"t": str(rk), "sz": 800, "bold": rk <= 2},
+                {"t": pat, "sz": 800, "algn": "l"},
+                {"t": hr, "sz": 800},
+                {"t": lift, "sz": 800, "bold": True, "font": "1F3864"},
+                {"t": " ".join(str(n) for n in cands), "sz": 800, "algn": "l", "bold": True, "font": "C00000"},
+            ])
+        sh.append(gtable(fid, f"t{bi}", x, 1680000, tblw, rows, row_h=300000)); fid += 1
+        py = 1680000 + 300000 * (len(blk["rows"]) + 1) + 220000
+        pool_txt = ", ".join(f"{n}({v})" if v > 1 else str(n) for n, v in blk["pool"])
+        sh.append(textbox(fid, f"p{bi}", x, py, sum(tblw), 1000000,
+                          run("▶ 상위 패턴 후보 풀: ", 1050, "1F3864", True)
+                          + run(pool_txt, 1050, "333333"))); fid += 1
+
+    foot = ("※ 1218~1227 사후(in-sample) 과적합 결과 — 62개 패턴 중 이 구간에서 우연히 잘 맞은 컷일 뿐, "
+            f"{next_no}회 적중을 보장하지 않습니다(로또는 독립 난수).")
+    sh.append(textbox(fid, "foot", 400000, H - 620000, W - 800000, 500000,
+                      run(foot, 1000, "A6A6A6"))); fid += 1
+    return wrap_slide(sh)
 
 
 # ── 4) 정적 패키지 파트 ────────────────────────────────────────────────────
@@ -564,13 +632,20 @@ def main():
     print(f"파싱: {r['next_no']}회 / z {len(r['z'])}행 / 분포 {len(r['dist'])}행 / "
           f"순위 {len(r['rank'])}행 / 게임 {len(r['games'])}")
 
-    # 순위별 재출현 통계 + 간격(차이수) 반복 분석 (최근 100회로 범위 확대)
-    hi = r["base_no"]; lo = hi - 99
+    # 순위별 재출현 통계 + 간격(차이수) 반복 분석
+    hi = r["base_no"]; lo = hi - GAP_REPEAT_WINDOW + 1
     rh_out = run_analyzer(["rankhits", str(lo), str(hi)])
     rhwin, rhrows = parse_rankhits(rh_out)
     rank_gaps, rh_cands, rh_periodic = parse_rankgaps(rh_out)
     print(f"순위재출현: {rhwin[2] if rhwin else 0}회 / {len(rhrows)}순위 / "
           f"◎후보 {len(rh_cands)}개 / ○주기 {rh_periodic}개")
+
+    # 과거 10회(1218~1227) 패턴별 성적 상위 → 다음회차 예측
+    base = r["base_no"]
+    cr_out = run_analyzer(["customrank", str(base - 9), str(base)])
+    patpred = parse_patpred(cr_out)
+    print(f"패턴예측: {len(patpred)}블록 / "
+          + " · ".join(f"{b['metric']} {len(b['rows'])}패턴·풀{len(b['pool'])}" for b in patpred))
 
     rank2num = {int(t[0]): t[1] for t in r["rank"]}
     slides = [slide_summary(r)]
@@ -578,6 +653,9 @@ def main():
     slides += [slide_games(r)]
     slides += slides_rankhits(rhwin, rhrows, rank2num, r["next_no"],
                               rank_gaps, rh_cands, rh_periodic)
+    pp = slide_patpred(patpred)
+    if pp:
+        slides += [pp]
     parts = {
         "[Content_Types].xml": content_types(len(slides)),
         "_rels/.rels": RELS_ROOT,

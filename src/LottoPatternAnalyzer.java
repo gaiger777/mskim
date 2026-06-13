@@ -31,6 +31,7 @@ public class LottoPatternAnalyzer {
     // ※ 후보 간 차이는 사실상 노이즈 수준이며(무작위 대비 유의미한 우위 없음), 미래 적중을 보장하지 않음.
     static final int WF_TRAIN_WEEKS = 200; // walk-forward 가중치 학습 창 (라이브 추천 = 검증과 동일 방식)
     static final int RANK_DIST_WEEKS = 200; // 순위그룹 분포 산정 창 (표본 안정화)
+    static final int GAP_REPEAT_WINDOW = 195; // 재출현 간격(차이수) 반복 분석 창
     // 100회 주기 보정: 다음 회차의 300회 이내 형제 회차(D-100·D-200·D-300) 당첨번호에 든 번호를
     // '주기 하강 스왑'으로 우선순위 상향. ※ 재출현율(35.3%)이 무작위 기대(34.9%)와 동일 → 효과는 백테스트로 확인.
     static final int CYCLE_LOOKBACK = 300;   // 주기 조회 범위(회)
@@ -138,12 +139,48 @@ public class LottoPatternAnalyzer {
         }
 
         // 진단 모드: 순위별(1~45위) 추천 번호가 당첨으로 재출현한 횟수·회차 + 재출현 간격(차이수) 반복 분석.
-        //   (java ... LottoPatternAnalyzer rankhits [lo] [hi])  기본 최근 100회(범위 확대)
+        //   (java ... LottoPatternAnalyzer rankhits [lo] [hi])  기본 최근 GAP_REPEAT_WINDOW회
         if (args.length > 0 && args[0].equals("rankhits")) {
             int hi = args.length > 2 ? Integer.parseInt(args[2]) : drawHistory.get(drawHistory.size() - 1).drawNo;
-            int lo = args.length > 1 ? Integer.parseInt(args[1]) : hi - 99;
+            int lo = args.length > 1 ? Integer.parseInt(args[1]) : hi - GAP_REPEAT_WINDOW + 1;
             GPPatternMiner.injectIntoEngine(drawHistory); // 라이브 게임과 동일한 패턴 풀로 순위 산정(일관성)
             runRankHits(drawHistory, lo, hi);
+            return;
+        }
+
+        // 진단 모드: 커스텀 패턴(고정 풀, GP 미주입)만으로 lo~hi 각 회차를 직전 데이터로 예측 → 당첨 적중 통계.
+        //   (java ... LottoPatternAnalyzer customdiag [lo] [hi])  기본 최근 10회
+        if (args.length > 0 && args[0].equals("customdiag")) {
+            int hi = args.length > 2 ? Integer.parseInt(args[2]) : drawHistory.get(drawHistory.size() - 1).drawNo;
+            int lo = args.length > 1 ? Integer.parseInt(args[1]) : hi - 9;
+            runCustomDiag(drawHistory, lo, hi);
+            return;
+        }
+
+        // 진단 모드: 커스텀 변환 패턴(고정 풀)을 2개씩 조합해 lo~hi 구간 당첨 적중 합이 가장 큰 조합 탐색.
+        //   (java ... LottoPatternAnalyzer custompair [lo] [hi])  기본 최근 10회
+        if (args.length > 0 && args[0].equals("custompair")) {
+            int hi = args.length > 2 ? Integer.parseInt(args[2]) : drawHistory.get(drawHistory.size() - 1).drawNo;
+            int lo = args.length > 1 ? Integer.parseInt(args[1]) : hi - 9;
+            runCustomPair(drawHistory, lo, hi);
+            return;
+        }
+
+        // 진단 모드: 커스텀 변환 패턴(고정 풀) 각각을 lo~hi 구간 단독 성적으로 정렬해 전체 표시.
+        //   (java ... LottoPatternAnalyzer customrank [lo] [hi])  기본 최근 10회
+        if (args.length > 0 && args[0].equals("customrank")) {
+            int hi = args.length > 2 ? Integer.parseInt(args[2]) : drawHistory.get(drawHistory.size() - 1).drawNo;
+            int lo = args.length > 1 ? Integer.parseInt(args[1]) : hi - 9;
+            runCustomRank(drawHistory, lo, hi);
+            return;
+        }
+
+        // 진단 모드: 대각합 전체 / 끝수 곱집합 각각의 '회차 내 생성 중복수'별 적중 확률.
+        //   (java ... LottoPatternAnalyzer customdup [lo] [hi])  기본 최근 10회
+        if (args.length > 0 && args[0].equals("customdup")) {
+            int hi = args.length > 2 ? Integer.parseInt(args[2]) : drawHistory.get(drawHistory.size() - 1).drawNo;
+            int lo = args.length > 1 ? Integer.parseInt(args[1]) : hi - 9;
+            runCustomDup(drawHistory, lo, hi);
             return;
         }
 
@@ -208,11 +245,11 @@ public class LottoPatternAnalyzer {
         // 100회 주기 보정: 다음 회차의 300회 이내 형제 회차에 든 번호를 표시
         Set<Integer> cycleSet = cycleNumbers(nextDrawNo, drawHistory);
         for (int n : cycleSet) if (scoreTags.containsKey(n)) scoreTags.get(n).add("주기300");
-        // 재출현 간격(차이수) 3회 이상 반복 번호: 게임 생성 시 '무조건 포함' 대상 (최근 100회 기준)
-        Set<Integer> gapMustSet = gapRepeatNumbers(drawHistory, 100);
-        for (int n : gapMustSet) if (scoreTags.containsKey(n)) scoreTags.get(n).add("간격3회");
+        // 재출현 간격(차이수) 5회 이상 반복 번호: 게임 생성 시 '무조건 포함' 대상
+        Set<Integer> gapMustSet = gapRepeatNumbers(drawHistory, GAP_REPEAT_WINDOW);
+        for (int n : gapMustSet) if (scoreTags.containsKey(n)) scoreTags.get(n).add("간격5회");
         if (!gapMustSet.isEmpty())
-            System.out.println("※ 간격3회 필수 포함 번호(재출현 간격 3회↑ 반복): " + new TreeSet<>(gapMustSet));
+            System.out.println("※ 간격5회 필수 포함 번호(재출현 간격 5회↑ 반복): " + new TreeSet<>(gapMustSet));
 
         // 6. 점수순 정렬 → 인접 단일 비교 스왑(주기 포함 번호가 바로 위 미포함 번호를 한 칸씩 추월)
         List<Integer> topNumbers = new ArrayList<>(finalScores.keySet());
@@ -244,7 +281,7 @@ public class LottoPatternAnalyzer {
                 generateDistributionGames(topNumbers, finalScores, rankDistribution, filter, latestDraw, 5, cycleSet, gapMustSet);
 
         System.out.println("----------------------------------------------------------");
-        System.out.println("⚙️ [최종 5게임 — 분포 가중 추출 + 고확률 필터 + 세로열 2개↓ + 주기300 필수 + 간격3회 필수 + 적합도 상위]");
+        System.out.println("⚙️ [최종 5게임 — 분포 가중 추출 + 고확률 필터 + 세로열 2개↓ + 주기300 필수 + 간격5회 필수 + 적합도 상위]");
         System.out.println(filter.describe());
         System.out.println("----------------------------------------------------------");
         char gameLabel = 'A';
@@ -521,7 +558,7 @@ public class LottoPatternAnalyzer {
             weight[n] *= (rank <= 15 ? TIER_TOP : rank <= 30 ? TIER_MID : TIER_BOT);
         }
 
-        // 필수 포함(간격3회 반복) 번호를 강한순(반복수 큰 순)으로 시드 후보에 정렬. 6개를 넘으면 앞 6개만.
+        // 필수 포함(간격5회 반복) 번호를 강한순(반복수 큰 순)으로 시드 후보에 정렬. 6개를 넘으면 앞 6개만.
         List<Integer> seedAll = new ArrayList<>();
         for (int m : (mustInclude == null ? Collections.<Integer>emptySet() : mustInclude)) {
             if (seedAll.size() >= 6) break;
@@ -556,7 +593,7 @@ public class LottoPatternAnalyzer {
             // 3) 회전: 게임마다 forceCount개의 '서로 다른' 부분집합을 순환창으로 강제 →
             //    필수번호가 특정 강한 몇 개에 고정되지 않고 5게임 전체에 고루 등장한다.
             int S = seedAll.size();
-            System.out.printf("※ 간격3회 필수번호 %d개는 제약 충돌로 게임당 %d개씩 회전 포함해 전 게임에 고루 배치합니다.\n",
+            System.out.printf("※ 간격5회 필수번호 %d개는 제약 충돌로 게임당 %d개씩 회전 포함해 전 게임에 고루 배치합니다.\n",
                     S, forceCount);
             for (int g = 0; g < requiredGames; g++) {
                 // 순환창 부분집합: seedAll[g], seedAll[g+1], …(mod S) 중 forceCount개.
@@ -1272,17 +1309,17 @@ public class LottoPatternAnalyzer {
             if (priorCount >= 3) strongCandidates.add(new int[]{r, number, priorCount, nextGap});
         }
         System.out.println("----------------------------------------------------------");
-        System.out.println("범례: 다음간격 = (다음회차 - 마지막재출현회차). 이 간격이 과거 재출현 간격으로 3회 이상 반복됐으면 ◎.");
+        System.out.println("범례: 다음간격 = (다음회차 - 마지막재출현회차). 이 간격이 과거 재출현 간격으로 5회 이상 반복됐으면 ◎.");
         System.out.println("==========================================================");
 
         // ── 요약: 이번 회차 재출현 가능성이 있는 순위·번호 ──
         System.out.printf("   [%d회차] 재출현 간격 반복으로 본 '이번에도 나올 가능성' 순위\n", nextDraw);
         System.out.println("----------------------------------------------------------");
         if (strongCandidates.isEmpty()) {
-            System.out.println("◎ 다음간격이 과거 간격으로 3회 이상 반복된 순위: 없음");
+            System.out.println("◎ 다음간격이 과거 간격으로 5회 이상 반복된 순위: 없음");
         } else {
             strongCandidates.sort((a, b) -> b[2] - a[2]); // 반복 횟수 많은 순
-            System.out.println("◎ 다음간격이 과거 간격으로 3회 이상 반복된 순위 (강한 후보):");
+            System.out.println("◎ 다음간격이 과거 간격으로 5회 이상 반복된 순위 (강한 후보):");
             for (int[] c : strongCandidates)
                 System.out.printf("   - %2d위(번호 %2d): 다음간격 %d이(가) 과거 %d회 반복 → 이번 회차 재출현 가능성 높음\n",
                         c[0], c[1], c[3], c[2]);
@@ -1299,7 +1336,7 @@ public class LottoPatternAnalyzer {
     }
 
     // 최근 window회 동안 walk-forward 순위로 본 순위별 재출현 회차에서, 인접 간격(차이수)을 구해
-    // '다음 회차까지의 간격(=nextDraw-마지막재출현)'이 과거에 3회 이상 반복된 순위의 다음회차 예측번호를 반환.
+    // '다음 회차까지의 간격(=nextDraw-마지막재출현)'이 과거에 5회 이상 반복된 순위의 다음회차 예측번호를 반환.
     // (rankhits 진단의 ◎ '강한 후보'와 동일 기준 — 게임 생성 시 무조건 포함 대상)
     private static Set<Integer> gapRepeatNumbers(List<LottoDraw> all, int window) {
         if (all.isEmpty()) return Collections.emptySet();
@@ -1348,12 +1385,337 @@ public class LottoPatternAnalyzer {
             for (int i = 1; i < l.size(); i++) gapCount.merge(l.get(i) - l.get(i - 1), 1, Integer::sum);
             int nextGap = nextDraw - l.get(l.size() - 1);
             int prior = gapCount.getOrDefault(nextGap, 0);
-            if (prior >= 3) cand.add(new int[]{rankedNext.get(r - 1), prior});
+            if (prior >= 5) cand.add(new int[]{rankedNext.get(r - 1), prior});
         }
         cand.sort((a, b) -> b[1] - a[1]);
         Set<Integer> result = new LinkedHashSet<>();
         for (int[] c : cand) result.add(c[0]);
         return result;
+    }
+
+    // 진단: 커스텀 패턴(고정 풀, GP 미주입)만으로 lo~hi 각 회차를 직전 데이터로 예측 → 후보풀이 당첨번호를 얼마나 잡는지.
+    private static void runCustomDiag(List<LottoDraw> all, int lo, int hi) {
+        Map<Integer, Integer> idxOf = new HashMap<>();
+        for (int i = 0; i < all.size(); i++) idxOf.put(all.get(i).drawNo, i);
+        List<CustomPatternMiner.Pattern> pats = CustomPatternMiner.patterns(); // GP 미주입 = 고정 풀만
+
+        System.out.println("==========================================================");
+        System.out.printf ("   커스텀 패턴(고정 풀)만 — 다음당첨 적중 통계 (대상 %d~%d, 직전 데이터로 예측)\n", lo, hi);
+        System.out.printf ("   파이프라인: 최근 W=%d전이 최고 K=%d패턴 후보군  ·  변환 풀 %d개  ·  무작위 기대 적중 ≈ 풀크기×%.3f\n",
+                CustomPatternMiner.W, CustomPatternMiner.K, pats.size(), 6.0 / 45.0);
+        System.out.println("==========================================================");
+        System.out.println("회차  | 풀크기 | 적중 | 당첨번호                  | 적중번호       | 후보풀(투표순)");
+        System.out.println("----------------------------------------------------------");
+
+        int rounds = 0, sumHit = 0, sumPool = 0, anyHit = 0;
+        for (int T = lo; T <= hi; T++) {
+            Integer idx = idxOf.get(T);
+            if (idx == null || idx < 1) continue;
+            List<CustomPatternMiner.Scored> sel = CustomPatternMiner.selectTopK(pats, all, idx);
+            Map<Integer, Integer> votes = CustomPatternMiner.poolVotes(sel, all, idx);
+            Set<Integer> win = all.get(idx).getWinningNumbers();
+
+            List<Integer> pool = new ArrayList<>(votes.keySet());
+            pool.sort((a, b) -> votes.get(b) != votes.get(a) ? votes.get(b) - votes.get(a) : a - b);
+            List<Integer> hitNums = new ArrayList<>();
+            for (int x : pool) if (win.contains(x)) hitNums.add(x);
+            Collections.sort(hitNums);
+
+            String poolStr = pool.stream()
+                    .map(n -> votes.get(n) > 1 ? n + "(" + votes.get(n) + ")" : String.valueOf(n))
+                    .collect(java.util.stream.Collectors.joining(", "));
+            System.out.printf("%4d  | %5d  | %3d  | %-24s | %-13s | %s\n",
+                    T, pool.size(), hitNums.size(), new TreeSet<>(win).toString(),
+                    hitNums.isEmpty() ? "-" : hitNums.toString(), poolStr);
+
+            rounds++; sumHit += hitNums.size(); sumPool += pool.size();
+            if (!hitNums.isEmpty()) anyHit++;
+        }
+
+        System.out.println("----------------------------------------------------------");
+        if (rounds == 0) { System.out.println("대상 회차 없음."); return; }
+        double avgPool = (double) sumPool / rounds;
+        System.out.printf("합계 %d회  |  총 적중 %d개  ·  회당 평균 적중 %.2f개  ·  평균 풀크기 %.1f  ·  적중률(≥1개) %.1f%% (%d/%d)\n",
+                rounds, sumHit, (double) sumHit / rounds, avgPool, 100.0 * anyHit / rounds, anyHit, rounds);
+        System.out.printf("무작위 기대(동일 풀크기): 회당 평균 적중 ≈ %.2f개\n", avgPool * 6.0 / 45.0);
+        System.out.println("※ 로또는 독립 난수 — 평균 적중이 무작위 기대를 유의하게 넘지 못하면 예측력 없음(노이즈).");
+        System.out.println("==========================================================");
+    }
+
+    // 진단: 대각합 전체 / 끝수 곱집합 각각의 '회차 내 생성 중복수'별 적중 확률.
+    //   각 회차를 직전 데이터로 예측해 패턴 후보를 multiset(중복 허용)으로 만들고, 번호별 생성 횟수(=중복수)를
+    //   집계한 뒤 그 번호가 실제 당첨이었는지 본다. 중복수가 높을수록 잘 맞는지 패턴별로 따로 측정.
+    private static void runCustomDup(List<LottoDraw> all, int lo, int hi) {
+        Map<Integer, Integer> idxOf = new HashMap<>();
+        for (int i = 0; i < all.size(); i++) idxOf.put(all.get(i).drawNo, i);
+        List<Integer> idxs = new ArrayList<>();
+        for (int T = lo; T <= hi; T++) {
+            Integer idx = idxOf.get(T);
+            if (idx != null && idx >= 6) idxs.add(idx); // 대각합에 최근 6회 필요
+        }
+
+        runDupFor(all, idxs, "대각합 전체(↘)", true);
+        runDupFor(all, idxs, "끝수 곱집합", false);
+    }
+
+    // diag=true → ↘대각합 전체 multiset, false → 끝수 곱집합 multiset.
+    private static void runDupFor(List<LottoDraw> all, List<Integer> idxs, String title, boolean diag) {
+        // 중복수 c → {번호개수, 적중개수}
+        Map<Integer, int[]> byDup = new TreeMap<>();
+        System.out.println("\n==========================================================");
+        System.out.printf ("   [%s] 회차 내 생성 중복수별 적중 (대상 %d회)\n", title, idxs.size());
+        System.out.println("==========================================================");
+        System.out.println("회차  | 번호(중복수) …                         | 적중(중복수)");
+        System.out.println("----------------------------------------------------------");
+
+        for (int idx : idxs) {
+            Map<Integer, Integer> mult = new TreeMap<>(); // 번호 → 생성 횟수
+            if (diag) {
+                for (int k = 0; k < 6; k++) {
+                    int sum = 0;
+                    for (int r = 0; r < 6; r++) {
+                        int c = ((k + r) % 6 + 6) % 6;
+                        sum += all.get(idx - 1 - r).nums[c];
+                    }
+                    mult.merge(CustomPatternMiner.wrap(sum), 1, Integer::sum);
+                }
+            } else {
+                int[] d = all.get(idx - 1).nums;
+                for (int x : d) {
+                    int e = x % 10;
+                    mult.merge(CustomPatternMiner.wrap(e * (e == 0 ? 1 : e)), 1, Integer::sum);
+                }
+            }
+            Set<Integer> win = all.get(idx).getWinningNumbers();
+
+            StringBuilder line = new StringBuilder(), hitStr = new StringBuilder();
+            for (Map.Entry<Integer, Integer> en : mult.entrySet()) {
+                int num = en.getKey(), c = en.getValue();
+                line.append(num).append(c > 1 ? "(" + c + ") " : " ");
+                byDup.computeIfAbsent(c, k -> new int[2])[0]++;
+                if (win.contains(num)) {
+                    byDup.get(c)[1]++;
+                    hitStr.append(num).append("(").append(c).append(") ");
+                }
+            }
+            System.out.printf("%4d  | %-38s | %s\n", all.get(idx).drawNo,
+                    line.toString().trim(), hitStr.length() == 0 ? "-" : hitStr.toString().trim());
+        }
+
+        System.out.println("----------------------------------------------------------");
+        System.out.println("중복수 | 번호개수 | 적중 | 적중률");
+        for (Map.Entry<Integer, int[]> en : byDup.entrySet()) {
+            int[] v = en.getValue();
+            System.out.printf("  %2d회 |   %3d    | %3d  | %5.1f%%\n",
+                    en.getKey(), v[0], v[1], v[0] > 0 ? 100.0 * v[1] / v[0] : 0.0);
+        }
+        System.out.println("※ 무작위 기대 적중률 = 6/45 ≈ 13.3%. 표본 작음 — 우연 주의.");
+    }
+
+    // 진단: 커스텀 변환 패턴(고정 풀) 각각의 lo~hi 단독 성적(총적중·회당평균·적중회차·평균풀·lift)을 정렬해 전체 표시.
+    private static void runCustomRank(List<LottoDraw> all, int lo, int hi) {
+        Map<Integer, Integer> idxOf = new HashMap<>();
+        for (int i = 0; i < all.size(); i++) idxOf.put(all.get(i).drawNo, i);
+        List<CustomPatternMiner.Pattern> pats = CustomPatternMiner.patterns(); // GP 미주입 = 고정 풀만
+        final double BASE = 6.0 / 45.0;
+
+        List<Integer> idxs = new ArrayList<>();
+        List<Set<Integer>> wins = new ArrayList<>();
+        for (int T = lo; T <= hi; T++) {
+            Integer idx = idxOf.get(T);
+            if (idx == null || idx < 1) continue;
+            idxs.add(idx);
+            wins.add(all.get(idx).getWinningNumbers());
+        }
+        int R = idxs.size();
+
+        // {패턴index, 총적중, 총출력, 적중회차수}
+        List<int[]> rows = new ArrayList<>();
+        for (int p = 0; p < pats.size(); p++) {
+            int hit = 0, emit = 0, anyR = 0;
+            for (int r = 0; r < R; r++) {
+                Set<Integer> c = pats.get(p).apply(all.subList(0, idxs.get(r)));
+                emit += c.size();
+                int h = 0;
+                for (int x : c) if (wins.get(r).contains(x)) h++;
+                hit += h;
+                if (h > 0) anyR++;
+            }
+            rows.add(new int[]{p, hit, emit, anyR});
+        }
+        // 1차: 총적중 내림차순, 2차: lift 내림차순(=적중/출력), 3차: 출력 작은 순.
+        rows.sort((a, b) -> {
+            if (b[1] != a[1]) return b[1] - a[1];
+            double la = a[2] > 0 ? (double) a[1] / a[2] : 0, lb = b[2] > 0 ? (double) b[1] / b[2] : 0;
+            if (lb != la) return Double.compare(lb, la);
+            return a[2] - b[2];
+        });
+
+        System.out.println("==========================================================");
+        System.out.printf ("   커스텀 변환 패턴 단독 성적 정렬 (대상 %d~%d, %d회 · 패턴 %d개)\n", lo, hi, R, pats.size());
+        System.out.printf ("   정렬: 총적중↓ → lift↓ → 풀작은순  ·  lift = 적중 ÷ (출력 × %.3f), 1.0=무작위\n", BASE);
+        System.out.println("==========================================================");
+        System.out.printf ("순위 | 패턴               | 총적중 | 회당평균 | 적중회차 | 평균풀 |  lift\n");
+        System.out.println("----------------------------------------------------------");
+        for (int k = 0; k < rows.size(); k++) {
+            int[] e = rows.get(k);
+            double avgPool = (double) e[2] / R;
+            double lift = e[2] > 0 ? e[1] / (e[2] * BASE) : 0;
+            System.out.printf("%3d  | %-18s | %5d  | %7.2f  | %3d/%-3d  | %5.1f  | %5.2f\n",
+                    k + 1, pats.get(e[0]).name(), e[1], (double) e[1] / R, e[3], R, avgPool, lift);
+        }
+        System.out.println("==========================================================");
+        System.out.println("※ lift>1 이라도 1218~1227 사후(in-sample) 표본 10회 — 우연일 수 있음(로또는 독립 난수).");
+
+        // ── 다음회차 예측: 상위 패턴 두 지표(적중회차 비율 / lift) 기준 — Python PPT 파싱용 ──
+        int nextNo = all.get(all.size() - 1).drawNo + 1;
+        String[] metricNames = {"적중회차비율", "lift"};
+        for (int mi = 0; mi < 2; mi++) {
+            final int fmi = mi;
+            List<int[]> sorted = new ArrayList<>(rows);
+            sorted.sort((a, b) -> {
+                double la = a[2] > 0 ? (double) a[1] / a[2] : 0, lb = b[2] > 0 ? (double) b[1] / b[2] : 0;
+                if (fmi == 0) { // 적중회차(anyR=[3]) 우선 → 동률 lift → 풀작은순
+                    if (b[3] != a[3]) return b[3] - a[3];
+                    if (lb != la) return Double.compare(lb, la);
+                    return a[2] - b[2];
+                } else {        // lift 우선 → 동률 적중회차 → 풀작은순
+                    if (lb != la) return Double.compare(lb, la);
+                    if (b[3] != a[3]) return b[3] - a[3];
+                    return a[2] - b[2];
+                }
+            });
+            System.out.printf("%n##NEXT## %d회 예측 — 지표:%s (상위 5패턴)%n", nextNo, metricNames[mi]);
+            System.out.println("순위 | 패턴 | 적중회차 | 회당평균 | lift | " + nextNo + "후보");
+            Map<Integer, Integer> votes = new TreeMap<>();
+            int topN = Math.min(5, sorted.size());
+            for (int k = 0; k < topN; k++) {
+                int[] e = sorted.get(k);
+                Set<Integer> pred = new TreeSet<>(pats.get(e[0]).apply(all));
+                for (int x : pred) votes.merge(x, 1, Integer::sum);
+                double lift = e[2] > 0 ? e[1] / (e[2] * BASE) : 0;
+                System.out.printf("%d@@%s@@%d/%d@@%.2f@@%.2f@@%s%n",
+                        k + 1, pats.get(e[0]).name(), e[3], R, (double) e[1] / R, lift,
+                        pred.stream().map(String::valueOf).collect(java.util.stream.Collectors.joining(" ")));
+            }
+            List<Integer> pool = new ArrayList<>(votes.keySet());
+            pool.sort((a, b) -> votes.get(b) != votes.get(a) ? votes.get(b) - votes.get(a) : a - b);
+            System.out.printf("##POOL## %s%n", pool.stream()
+                    .map(n -> n + ":" + votes.get(n)).collect(java.util.stream.Collectors.joining(" ")));
+        }
+    }
+
+    // 진단: 커스텀 변환 패턴(고정 풀)을 2개씩 조합 → lo~hi 각 회차를 직전 데이터로 예측한 두 패턴의 후보 합집합이
+    //       당첨번호를 잡은 총합이 가장 큰 조합을 brute-force로 탐색.
+    private static void runCustomPair(List<LottoDraw> all, int lo, int hi) {
+        Map<Integer, Integer> idxOf = new HashMap<>();
+        for (int i = 0; i < all.size(); i++) idxOf.put(all.get(i).drawNo, i);
+        List<CustomPatternMiner.Pattern> pats = CustomPatternMiner.patterns(); // GP 미주입 = 고정 풀만
+
+        // 대상 회차(유효) 목록과 당첨번호 수집.
+        List<Integer> rounds = new ArrayList<>();
+        List<Set<Integer>> wins = new ArrayList<>();
+        for (int T = lo; T <= hi; T++) {
+            Integer idx = idxOf.get(T);
+            if (idx == null || idx < 1) continue;
+            rounds.add(idx);
+            wins.add(all.get(idx).getWinningNumbers());
+        }
+        int R = rounds.size();
+        int P = pats.size();
+
+        // 패턴별·회차별 후보 캐시: cand[p][r] = p.apply(직전데이터).
+        @SuppressWarnings("unchecked")
+        Set<Integer>[][] cand = new Set[P][R];
+        for (int p = 0; p < P; p++)
+            for (int r = 0; r < R; r++)
+                cand[p][r] = pats.get(p).apply(all.subList(0, rounds.get(r)));
+
+        // 모든 2조합 평가: 총 적중수(합집합∩당첨) + 합집합 풀크기 누적.
+        int[] bestI = new int[0], bestJ = new int[0];
+        List<int[]> results = new ArrayList<>(); // {i, j, totalHit, totalPool}
+        for (int i = 0; i < P; i++) {
+            for (int j = i + 1; j < P; j++) {
+                int totalHit = 0, totalPool = 0;
+                for (int r = 0; r < R; r++) {
+                    Set<Integer> u = new HashSet<>(cand[i][r]);
+                    u.addAll(cand[j][r]);
+                    totalPool += u.size();
+                    for (int x : u) if (wins.get(r).contains(x)) totalHit++;
+                }
+                results.add(new int[]{i, j, totalHit, totalPool});
+            }
+        }
+        results.sort((a, b) -> b[2] != a[2] ? b[2] - a[2] : a[3] - b[3]); // 적중 내림차순, 동률은 풀 작은 순
+
+        System.out.println("==========================================================");
+        System.out.printf ("   커스텀 변환 패턴 2조합 — 당첨 적중 최대 탐색 (대상 %d~%d, %d회)\n", lo, hi, R);
+        System.out.printf ("   풀 %d개  ·  조합 수 %d개  ·  look-ahead 없음(각 회차 직전 데이터로 예측)\n",
+                P, P * (P - 1) / 2);
+        System.out.println("   동률은 풀크기가 작은(=효율 높은) 조합 우선.");
+        System.out.println("==========================================================");
+        System.out.println("순위 | 패턴 A             + 패턴 B             | 총적중 | 회당평균 | 평균풀 | 무작위기대");
+        System.out.println("----------------------------------------------------------");
+        int show = Math.min(15, results.size());
+        for (int k = 0; k < show; k++) {
+            int[] e = results.get(k);
+            double avgPool = (double) e[3] / R;
+            System.out.printf("%3d  | %-18s + %-18s | %5d  | %7.2f  | %5.1f  | %.2f\n",
+                    k + 1, pats.get(e[0]).name(), pats.get(e[1]).name(),
+                    e[2], (double) e[2] / R, avgPool, avgPool * 6.0 / 45.0);
+        }
+        System.out.println("==========================================================");
+
+        // 최적 조합의 회차별 상세 — 두 패턴을 따로 표기.
+        int[] top = results.get(0);
+        String nameA = pats.get(top[0]).name(), nameB = pats.get(top[1]).name();
+        System.out.printf("\n[1위 조합 회차별 상세 — 패턴 따로]  A=%s  ·  B=%s\n", nameA, nameB);
+        System.out.println("----------------------------------------------------------");
+        System.out.printf("회차  | 당첨번호                  | A후보              | A적중      | B후보         | B적중\n");
+        int aHitTot = 0, bHitTot = 0;
+        int interRounds = 0, interNums = 0, interHits = 0, interHitRounds = 0; // 교집합 통계
+        for (int r = 0; r < R; r++) {
+            Set<Integer> ca = new TreeSet<>(cand[top[0]][r]), cb = new TreeSet<>(cand[top[1]][r]);
+            List<Integer> ha = new ArrayList<>(), hb = new ArrayList<>();
+            for (int x : ca) if (wins.get(r).contains(x)) ha.add(x);
+            for (int x : cb) if (wins.get(r).contains(x)) hb.add(x);
+            aHitTot += ha.size(); bHitTot += hb.size();
+
+            Set<Integer> inter = new TreeSet<>(ca); inter.retainAll(cb); // A∩B (중복 번호)
+            List<Integer> ih = new ArrayList<>();
+            for (int x : inter) if (wins.get(r).contains(x)) ih.add(x);
+            if (!inter.isEmpty()) interRounds++;
+            interNums += inter.size(); interHits += ih.size();
+            if (!ih.isEmpty()) interHitRounds++;
+
+            System.out.printf("%4d  | %-24s | %-17s | %-9s | %-12s | %-9s | 교집합 %-8s 적중 %s\n",
+                    all.get(rounds.get(r)).drawNo, new TreeSet<>(wins.get(r)).toString(),
+                    ca.toString(), ha.isEmpty() ? "-" : ha.toString(),
+                    cb.toString(), hb.isEmpty() ? "-" : hb.toString(),
+                    inter.isEmpty() ? "-" : inter.toString(), ih.isEmpty() ? "-" : ih.toString());
+        }
+        System.out.println("----------------------------------------------------------");
+        System.out.printf("합계: A(%s) 총 적중 %d개(회당 %.2f)  ·  B(%s) 총 적중 %d개(회당 %.2f)\n",
+                nameA, aHitTot, (double) aHitTot / R, nameB, bHitTot, (double) bHitTot / R);
+        System.out.println("----------------------------------------------------------");
+        System.out.printf("[교집합(두 패턴 중복 번호) 적중 확률]  교집합 발생 %d/%d회  ·  교집합 번호 총 %d개\n",
+                interRounds, R, interNums);
+        System.out.printf("  · 번호 기준 적중률: %d/%d = %.1f%% (중복으로 나온 번호가 실제 당첨일 확률)\n",
+                interHits, interNums, interNums > 0 ? 100.0 * interHits / interNums : 0.0);
+        System.out.printf("  · 회차 기준 적중률: %d/%d = %.1f%% (교집합 발생 회차 중 그게 당첨된 회차 비율)\n",
+                interHitRounds, interRounds, interRounds > 0 ? 100.0 * interHitRounds / interRounds : 0.0);
+        System.out.println("※ 1218~1227에 과적합된 사후(in-sample) 최적 조합 — 미래 적중 보장 아님(로또는 독립 난수).");
+
+        // 1위 조합을 최신 이력에 적용 → 다음 회차 예측 후보.
+        int nextNo = all.get(all.size() - 1).drawNo + 1;
+        Set<Integer> a = new TreeSet<>(pats.get(top[0]).apply(all));
+        Set<Integer> b = new TreeSet<>(pats.get(top[1]).apply(all));
+        Set<Integer> u = new TreeSet<>(a); u.addAll(b);
+        System.out.printf("\n[1위 조합 %d회 예측 후보]  %s  +  %s\n",
+                nextNo, pats.get(top[0]).name(), pats.get(top[1]).name());
+        System.out.printf("  · %-14s → %s\n", pats.get(top[0]).name(), a);
+        System.out.printf("  · %-14s → %s\n", pats.get(top[1]).name(), b);
+        System.out.printf("  ▶ 합집합 후보(%d개): %s\n", u.size(), u);
     }
 
     // 진단: 목표 회차를 직전 데이터로 예측한 순위로, tier 가중 설정별 5게임을 trials회 생성해 평균 적중 비교.
