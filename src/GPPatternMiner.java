@@ -184,12 +184,18 @@ public class GPPatternMiner {
     static void injectIntoEngine(List<LottoPatternAnalyzer.LottoDraw> history) {
         if (injected) return;
         injected = true;
+        CustomPatternMiner.replaceEvolved(evolvedPatternsForEngine(history));
+    }
+
+    static List<CustomPatternMiner.Pattern> evolvedPatternsForEngine(List<LottoPatternAnalyzer.LottoDraw> history) {
+        List<CustomPatternMiner.Pattern> patterns = new ArrayList<>();
         int size = history.size();
         int trainEnd = size - LottoPatternAnalyzer.WF_TRAIN_WEEKS; // 최근 측정창은 진화에서 제외
         int[] trainIdx = range(Math.max(R, trainEnd - 300), trainEnd);
-        if (trainIdx.length < 20) return;
+        if (trainIdx.length < 20) return patterns;
         for (Node t : evolve(history, trainIdx, 42L))
-            CustomPatternMiner.evolved.add(toPattern(t));
+            patterns.add(toPattern(t));
+        return patterns;
     }
 
     // ── gp 모드: 학습/검증 분리로 과적합 폭로 + 라이브 후보 ──────────────

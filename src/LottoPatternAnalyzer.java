@@ -143,7 +143,6 @@ public class LottoPatternAnalyzer {
         if (args.length > 0 && args[0].equals("rankhits")) {
             int hi = args.length > 2 ? Integer.parseInt(args[2]) : drawHistory.get(drawHistory.size() - 1).drawNo;
             int lo = args.length > 1 ? Integer.parseInt(args[1]) : hi - GAP_REPEAT_WINDOW + 1;
-            GPPatternMiner.injectIntoEngine(drawHistory); // 라이브 게임과 동일한 패턴 풀로 순위 산정(일관성)
             runRankHits(drawHistory, lo, hi);
             return;
         }
@@ -189,7 +188,6 @@ public class LottoPatternAnalyzer {
         if (args.length > 0 && args[0].equals("gapcut")) {
             int hi = args.length > 2 ? Integer.parseInt(args[2]) : drawHistory.get(drawHistory.size() - 1).drawNo;
             int lo = args.length > 1 ? Integer.parseInt(args[1]) : hi - 9;
-            GPPatternMiner.injectIntoEngine(drawHistory); // 라이브 rankhits ◎와 동일 패턴 풀(일관성)
             runGapCut(drawHistory, lo, hi);
             return;
         }
@@ -343,6 +341,11 @@ public class LottoPatternAnalyzer {
     // 길이(len)가 곧 prefix의 고유 식별자다. getScore는 인스턴스 상태를 변경하지 않으므로
     // 분석된 인스턴스를 호출 측이 공유해도 안전하다.
     private static final Map<String, PatternAnalyzer> ANALYZE_CACHE = new HashMap<>();
+
+    private static void preparePatternsForHistory(List<LottoDraw> history) {
+        CustomPatternMiner.replaceEvolved(GPPatternMiner.evolvedPatternsForEngine(history));
+        ANALYZE_CACHE.clear();
+    }
 
     // 주어진 history(prefix)에 대해 analyze()가 끝난 분석기 목록을 반환한다.
     // 캐시에 없으면 한 번만 analyze() 후 저장하여 동일 prefix 재계산을 제거한다.
@@ -1024,6 +1027,7 @@ public class LottoPatternAnalyzer {
             List<LottoDraw> hist = all.subList(0, idx);
             LottoDraw prev = all.get(idx - 1);
             Set<Integer> win = all.get(idx).getWinningNumbers();
+            preparePatternsForHistory(hist);
             List<PatternAnalyzer> az = analyzersFor(hist);
             Map<String, Double> w = computeAccuracyWeights(hist, WF_TRAIN_WEEKS);
             Map<Integer, Double> sc = computeFinalScores(az, hist, prev, w, null);
@@ -1259,6 +1263,7 @@ public class LottoPatternAnalyzer {
         if (lastIdx != null) {
             List<LottoDraw> histN = all.subList(0, lastIdx + 1);
             LottoDraw prevN = all.get(lastIdx);
+            preparePatternsForHistory(histN);
             List<PatternAnalyzer> azN = analyzersFor(histN);
             Map<String, Double> wN = computeAccuracyWeights(histN, WF_TRAIN_WEEKS);
             Map<Integer, Double> scN = computeFinalScores(azN, histN, prevN, wN, null);
@@ -1413,6 +1418,11 @@ public class LottoPatternAnalyzer {
         return result;
     }
 
+    private static LinkedHashMap<Integer, Integer> gapRepeatCountsReliable(List<LottoDraw> history, int window, int cutoff) {
+        preparePatternsForHistory(history);
+        return gapRepeatCounts(history, window, cutoff);
+    }
+
     // 진단: 커스텀 패턴(고정 풀, GP 미주입)만으로 lo~hi 각 회차를 직전 데이터로 예측 → 후보풀이 당첨번호를 얼마나 잡는지.
     private static void runCustomDiag(List<LottoDraw> all, int lo, int hi) {
         Map<Integer, Integer> idxOf = new HashMap<>();
@@ -1468,7 +1478,14 @@ public class LottoPatternAnalyzer {
         Map<Integer, Integer> idxOf = new HashMap<>();
         for (int i = 0; i < all.size(); i++) idxOf.put(all.get(i).drawNo, i);
         int window = GAP_REPEAT_WINDOW;
-        int nextNo = all.get(all.size() - 1).drawNo + 1;
+        int nextNo = hi + 1;
+        Integer hiIdx = idxOf.get(hi);
+        if (hiIdx == null) {
+            System.out.printf("%n##GAPCUT## 대상 %d~%d, 창 %d회, 예측회차 %d, 무작위기대 %.1f%%%n",
+                    lo, hi, window, nextNo, 100.0 * 6 / 45);
+            System.out.println("대상 종료 회차 데이터 없음.");
+            return;
+        }
 
         // 회차당 1회만 ◎번호→반복수 계산(반복수≥4 전부)해 컷오프 4개가 공유 — 무거운 walk-forward를 4배 줄임.
         List<Integer> rounds = new ArrayList<>();
@@ -1478,7 +1495,7 @@ public class LottoPatternAnalyzer {
             Integer idx = idxOf.get(T);
             if (idx == null || idx < 1) continue;
             rounds.add(T);
-            perRound.add(gapRepeatCounts(all.subList(0, idx), window, 4)); // [T-창, T-1] 창
+            perRound.add(gapRepeatCountsReliable(all.subList(0, idx), window, 4)); // [T-창, T-1] 창
             perWin.add(all.get(idx).getWinningNumbers());
         }
         int R = rounds.size();
@@ -1499,7 +1516,8 @@ public class LottoPatternAnalyzer {
                     cutoff, total, hit, (double) total / Math.max(1, R), rate);
         }
         // 라이브: 각 컷오프별 다음회차(nextNo) ◎ 예측번호.
-        LinkedHashMap<Integer, Integer> liveCounts = gapRepeatCounts(all, window, 4);
+        List<LottoDraw> liveHistory = all.subList(0, hiIdx + 1);
+        LinkedHashMap<Integer, Integer> liveCounts = gapRepeatCountsReliable(liveHistory, window, 4);
         System.out.println("##GAPCUTLIVE##");
         for (int cutoff = 4; cutoff <= 7; cutoff++) {
             TreeSet<Integer> omark = new TreeSet<>();

@@ -51,6 +51,12 @@ public class CustomPatternMiner {
         return COMBINED;
     }
 
+    static void replaceEvolved(Collection<Pattern> patterns) {
+        evolved.clear();
+        evolved.addAll(patterns);
+        COMBINED = null;
+    }
+
     // ── 변환 가족 자동 열거 ───────────────────────────────────────────────
     static List<Pattern> buildPatterns() {
         List<Pattern> ps = new ArrayList<>();
