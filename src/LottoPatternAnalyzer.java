@@ -301,6 +301,21 @@ public class LottoPatternAnalyzer {
                     game.stream().map(n -> String.format("%2d", n)).collect(Collectors.joining(", ")),
                     sum, oddCount, 6 - oddCount);
         }
+        // 게임 다양성 진단 — 게임끼리 얼마나 겹치는지, 특정 번호가 몇 게임에 쏠렸는지.
+        if (!finalGames.isEmpty()) {
+            int[] dv = diversityStats(finalGames);
+            Map<Integer, Integer> freq = new TreeMap<>();
+            for (List<Integer> g : finalGames) for (int n : g) freq.merge(n, 1, Integer::sum);
+            String hot = freq.entrySet().stream()
+                    .filter(e -> e.getValue() >= 3)
+                    .map(e -> e.getKey() + "번×" + e.getValue())
+                    .collect(Collectors.joining(", "));
+            System.out.printf("※ 다양성: 게임 간 최대중복 %d개 · 번호 최대등장 %d게임%s%s\n",
+                    dv[0], dv[1],
+                    (appliedTier == null ? "" : String.format(" (적용단계 중복≤%d·등장≤%d)",
+                            appliedTier[0], appliedTier[1])),
+                    (hot.isEmpty() ? "" : " · 3게임↑ 등장: " + hot));
+        }
         System.out.println("==========================================================");
     }
     
@@ -558,6 +573,8 @@ public class LottoPatternAnalyzer {
             Map<String, Double> rankDistribution, GameFilter filter,
             LottoDraw latestDraw, int requiredGames, Set<Integer> cycleSet, Set<Integer> mustInclude) {
 
+        appliedTier = null; // 이번 호출에서 실제로 적용된 다양성 단계를 새로 기록한다.
+
         // 1) 번호별 추출 가중치 = 소속 순위그룹의 당첨확률 (그룹당 5개가 공유). 제외수(veto)는 0.
         //    순위는 이미 주기 스왑이 반영된 순서이므로, 주기 포함 번호는 더 좋은 그룹 가중치를 받는다.
         double[] weight = new double[46];
@@ -586,8 +603,11 @@ public class LottoPatternAnalyzer {
 
         // 2) 게임당 강제 가능한 최대 개수(forceCount) 결정 — 강한 부분집합으로 충분한 후보가 모이는 한계.
         //    필수번호 전부를 한 게임에 강제하면 제약 충돌로 게임이 안 나오므로, 줄여가며 한계를 찾는다.
+        // 강제 포함은 게임당 MAX_FORCE_PER_GAME개까지만. 이 상한이 없으면 6칸 중 5칸이 필수번호로
+        // 고정되어 자유 슬롯이 1개만 남고, 그 결과 5게임이 서로 4~5개씩 겹친다.
+        // 필수번호 전체 커버리지는 아래 '회전'이 담당하므로 게임당 개수는 적어도 된다.
         Random rnd = new Random();
-        int forceCount = seedAll.size();
+        int forceCount = Math.min(seedAll.size(), MAX_FORCE_PER_GAME);
         for (; forceCount > 0; forceCount--) {
             Map<List<Integer>, Double> probe = gatherCandidates(
                     new ArrayList<>(seedAll.subList(0, forceCount)), weight, filter,
@@ -623,12 +643,18 @@ public class LottoPatternAnalyzer {
                 final Map<List<Integer>, Double> fpool = pool;
                 List<List<Integer>> cand = new ArrayList<>(fpool.keySet());
                 cand.sort((a, b) -> Double.compare(fpool.get(b), fpool.get(a)));
+                // 적합도 높은 순으로, 다양성 사다리를 엄격한 단계부터 적용해 한 게임을 고른다.
                 List<Integer> choice = null;
-                for (List<Integer> game : cand) { // 적합도 높은 순으로, 기존과 2개↑ 다른 게임 우선
-                    if (picked.contains(game)) continue;
-                    boolean tooSimilar = false;
-                    for (List<Integer> p : picked) if (overlapCount(game, p) >= 5) { tooSimilar = true; break; }
-                    if (!tooSimilar) { choice = game; break; }
+                for (int[] tier : DIVERSITY_TIERS) {
+                    for (List<Integer> game : cand) {
+                        if (picked.contains(game)) continue;
+                        if (acceptsDiversity(picked, game, tier[0], tier[1])) { choice = game; break; }
+                    }
+                    if (choice != null) {
+                        if (appliedTier == null || tier[0] > appliedTier[0] || tier[1] > appliedTier[1])
+                            appliedTier = tier; // 5게임 중 가장 느슨했던 단계를 기록
+                        break;
+                    }
                 }
                 if (choice == null) // 다양성 만족 후보가 없으면 중복만 아니면 적합도 1위 채택
                     for (List<Integer> game : cand) if (!picked.contains(game)) { choice = game; break; }
@@ -641,7 +667,16 @@ public class LottoPatternAnalyzer {
                         cycleSet, rankedNumbers, rankDistribution, rnd, 2000, 300000);
                 List<List<Integer>> fcand = new ArrayList<>(filler.keySet());
                 fcand.sort((a, b) -> Double.compare(filler.get(b), filler.get(a)));
-                for (List<Integer> gApp : fcand) {
+                // 보충분도 다양성 사다리를 지키도록 엄격한 단계부터 채운다.
+                for (int[] tier : DIVERSITY_TIERS) {
+                    for (List<Integer> gApp : fcand) {
+                        if (picked.size() >= requiredGames) break;
+                        if (picked.contains(gApp)) continue;
+                        if (acceptsDiversity(picked, gApp, tier[0], tier[1])) picked.add(gApp);
+                    }
+                    if (picked.size() >= requiredGames) break;
+                }
+                for (List<Integer> gApp : fcand) { // 그래도 모자라면 적합도순 보충
                     if (picked.size() >= requiredGames) break;
                     if (!picked.contains(gApp)) picked.add(gApp);
                 }
@@ -680,22 +715,66 @@ public class LottoPatternAnalyzer {
         return candidates;
     }
 
-    // 적합도 내림차순으로, 서로 2개 이상 다른 게임을 우선해 requiredGames개를 고른다(모자라면 적합도순 보충).
+    // 다양성 완화 사다리 — {게임 간 최대 중복 개수, 한 번호의 최대 등장 게임 수}.
+    // 앞(엄격)부터 시도해 requiredGames개를 채우면 즉시 확정하고, 못 채우면 다음 단계로 넘어간다.
+    // 마지막 단계는 사실상 제약 없음이므로 게임 수는 항상 보장된다.
+    private static final int[][] DIVERSITY_TIERS = {
+            {3, 2}, {3, 3}, {4, 2}, {4, 3}, {4, 4}, {5, 4}, {5, 5}, {6, 6}
+    };
+    // 게임당 강제 포함(간격5회 필수)할 수 있는 최대 번호 수. 나머지 칸은 가중 추출에 맡겨
+    // 게임 간 다양성을 확보한다. 필수번호 전체는 게임별 회전으로 고루 배치된다.
+    private static final int MAX_FORCE_PER_GAME = 2;
+    // 실제로 채택된 다양성 단계(출력용). generateDistributionGames 호출마다 갱신된다.
+    private static int[] appliedTier = null;
+
+    // 이미 고른 게임들에 game을 추가해도 다양성 제약을 지키는가.
+    //  maxOverlap: 기존 게임과 겹쳐도 되는 최대 번호 수
+    //  maxReuse  : 한 번호가 등장해도 되는 최대 게임 수
+    private static boolean acceptsDiversity(List<List<Integer>> picked, List<Integer> game,
+                                            int maxOverlap, int maxReuse) {
+        for (List<Integer> p : picked)
+            if (overlapCount(game, p) > maxOverlap) return false;
+        for (int n : game) {
+            int used = 0;
+            for (List<Integer> p : picked) if (p.contains(n)) used++;
+            if (used + 1 > maxReuse) return false;
+        }
+        return true;
+    }
+
+    // 적합도 내림차순으로, 다양성 사다리를 엄격한 단계부터 적용해 requiredGames개를 고른다.
     private static List<List<Integer>> pickDiverse(Map<List<Integer>, Double> candidates, int requiredGames) {
         List<List<Integer>> sorted = new ArrayList<>(candidates.keySet());
         sorted.sort((a, b) -> Double.compare(candidates.get(b), candidates.get(a)));
-        List<List<Integer>> picked = new ArrayList<>();
-        for (List<Integer> g : sorted) {
-            if (picked.size() >= requiredGames) break;
-            boolean tooSimilar = false;
-            for (List<Integer> p : picked) if (overlapCount(g, p) >= 5) { tooSimilar = true; break; }
-            if (!tooSimilar) picked.add(g);
+        for (int[] tier : DIVERSITY_TIERS) {
+            List<List<Integer>> picked = new ArrayList<>();
+            for (List<Integer> g : sorted) {
+                if (picked.size() >= requiredGames) break;
+                if (acceptsDiversity(picked, g, tier[0], tier[1])) picked.add(g);
+            }
+            if (picked.size() >= requiredGames) { appliedTier = tier; return picked; }
         }
+        // 여기까지 오면 후보 자체가 부족한 경우 — 적합도순으로 채운다.
+        appliedTier = DIVERSITY_TIERS[DIVERSITY_TIERS.length - 1];
+        List<List<Integer>> picked = new ArrayList<>();
         for (List<Integer> g : sorted) {
             if (picked.size() >= requiredGames) break;
             if (!picked.contains(g)) picked.add(g);
         }
         return picked;
+    }
+
+    // 게임 간 최대 중복 개수와 번호별 최대 등장 게임 수를 계산한다(출력용).
+    private static int[] diversityStats(List<List<Integer>> games) {
+        int maxOv = 0;
+        for (int i = 0; i < games.size(); i++)
+            for (int j = i + 1; j < games.size(); j++)
+                maxOv = Math.max(maxOv, overlapCount(games.get(i), games.get(j)));
+        Map<Integer, Integer> freq = new HashMap<>();
+        for (List<Integer> g : games) for (int n : g) freq.merge(n, 1, Integer::sum);
+        int maxReuse = 0;
+        for (int c : freq.values()) maxReuse = Math.max(maxReuse, c);
+        return new int[]{maxOv, maxReuse};
     }
 
     // 적합도 = 6개 번호가 속한 순위그룹 당첨확률의 합 (분포 정렬도가 높을수록 큼)
