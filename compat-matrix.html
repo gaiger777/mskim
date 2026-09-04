@@ -1,0 +1,1226 @@
+<title>제품군 버전 호환성 매트릭스</title>
+
+<style>
+  :root {
+    --bg: #F1F3F6;
+    --surface: #FFFFFF;
+    --surface-2: #E8EBF0;
+    --ink: #15181F;
+    --ink-2: #4A5160;
+    --ink-3: #7A8290;
+    --line: #D5DAE2;
+    --line-soft: #E3E7ED;
+    --brass: #8F6318;
+    --brass-ink: #6E4B0F;
+    --brass-bg: #F6E7C7;
+    --brass-line: #D9BC7E;
+    --good: #18624A;
+    --good-bg: #DCEFE7;
+    --good-line: #8AC5AE;
+    --shadow: 0 1px 2px rgba(21, 24, 31, .05), 0 8px 24px -12px rgba(21, 24, 31, .18);
+
+    --f-ui: -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo", "Pretendard",
+            "Noto Sans KR", "Malgun Gothic", "Segoe UI", Roboto, sans-serif;
+    --f-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas,
+              "Liberation Mono", monospace;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0E1015;
+      --surface: #171A22;
+      --surface-2: #1E222C;
+      --ink: #E7EAF0;
+      --ink-2: #A6AEBD;
+      --ink-3: #6C7484;
+      --line: #2A2F3A;
+      --line-soft: #232833;
+      --brass: #E0AC4C;
+      --brass-ink: #F0C87E;
+      --brass-bg: #382A0E;
+      --brass-line: #6B5220;
+      --good: #56C89A;
+      --good-bg: #0F3226;
+      --good-line: #2C6E54;
+      --shadow: 0 1px 2px rgba(0, 0, 0, .4), 0 8px 24px -12px rgba(0, 0, 0, .6);
+    }
+  }
+
+  :root[data-theme="light"] {
+    --bg: #F1F3F6;
+    --surface: #FFFFFF;
+    --surface-2: #E8EBF0;
+    --ink: #15181F;
+    --ink-2: #4A5160;
+    --ink-3: #7A8290;
+    --line: #D5DAE2;
+    --line-soft: #E3E7ED;
+    --brass: #8F6318;
+    --brass-ink: #6E4B0F;
+    --brass-bg: #F6E7C7;
+    --brass-line: #D9BC7E;
+    --good: #18624A;
+    --good-bg: #DCEFE7;
+    --good-line: #8AC5AE;
+    --shadow: 0 1px 2px rgba(21, 24, 31, .05), 0 8px 24px -12px rgba(21, 24, 31, .18);
+  }
+
+  :root[data-theme="dark"] {
+    --bg: #0E1015;
+    --surface: #171A22;
+    --surface-2: #1E222C;
+    --ink: #E7EAF0;
+    --ink-2: #A6AEBD;
+    --ink-3: #6C7484;
+    --line: #2A2F3A;
+    --line-soft: #232833;
+    --brass: #E0AC4C;
+    --brass-ink: #F0C87E;
+    --brass-bg: #382A0E;
+    --brass-line: #6B5220;
+    --good: #56C89A;
+    --good-bg: #0F3226;
+    --good-line: #2C6E54;
+    --shadow: 0 1px 2px rgba(0, 0, 0, .4), 0 8px 24px -12px rgba(0, 0, 0, .6);
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: var(--f-ui);
+    font-size: 15px;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .page {
+    max-width: 1180px;
+    margin: 0 auto;
+    padding: 40px 24px 72px;
+    display: flex;
+    flex-direction: column;
+    gap: 32px;
+  }
+
+  /* ---------- 헤더 ---------- */
+
+  .masthead { display: flex; flex-direction: column; gap: 10px; }
+
+  .eyebrow {
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: .14em;
+    text-transform: uppercase;
+    color: var(--brass);
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .eyebrow::after {
+    content: "";
+    flex: 1;
+    height: 1px;
+    background: var(--brass-line);
+    opacity: .6;
+  }
+
+  h1 {
+    margin: 0;
+    font-size: clamp(26px, 4vw, 38px);
+    font-weight: 750;
+    letter-spacing: -.022em;
+    text-wrap: balance;
+    line-height: 1.2;
+  }
+
+  .lede {
+    margin: 0;
+    max-width: 62ch;
+    color: var(--ink-2);
+    font-size: 15px;
+  }
+
+  .meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 18px;
+    margin-top: 4px;
+    font-size: 12.5px;
+    color: var(--ink-3);
+    font-variant-numeric: tabular-nums;
+  }
+  .meta b { color: var(--ink-2); font-weight: 650; }
+
+  /* ---------- 조작 바 ---------- */
+
+  .bar {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    flex-wrap: wrap;
+    padding: 12px 16px;
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    box-shadow: var(--shadow);
+  }
+
+  .bar-msg {
+    flex: 1 1 320px;
+    min-width: 0;
+    font-size: 13.5px;
+    color: var(--ink-2);
+  }
+  .bar-msg strong {
+    color: var(--ink);
+    font-family: var(--f-mono);
+    font-variant-numeric: tabular-nums;
+    font-weight: 600;
+  }
+
+  .legend { display: flex; gap: 14px; flex-wrap: wrap; font-size: 12px; color: var(--ink-3); }
+  .legend span { display: inline-flex; align-items: center; gap: 6px; }
+  .swatch {
+    width: 11px; height: 11px; border-radius: 3px;
+    border: 1px solid var(--line); display: inline-block;
+  }
+  .sw-sel { background: var(--brass-bg); border-color: var(--brass); }
+  .sw-ok  { background: var(--good-bg); border-color: var(--good-line); }
+  .sw-no  { background: var(--surface-2); }
+
+  button {
+    font-family: inherit;
+    font-size: inherit;
+    cursor: pointer;
+  }
+
+  .btn-reset {
+    padding: 6px 14px;
+    border-radius: 7px;
+    border: 1px solid var(--line);
+    background: var(--surface-2);
+    color: var(--ink-2);
+    font-size: 12.5px;
+    font-weight: 600;
+    transition: border-color .12s, color .12s;
+  }
+  .btn-reset:hover { border-color: var(--ink-3); color: var(--ink); }
+  .btn-reset[disabled] { opacity: .4; cursor: default; }
+
+  :focus-visible {
+    outline: 2px solid var(--brass);
+    outline-offset: 2px;
+    border-radius: 5px;
+  }
+
+  /* ---------- 매트릭스 ---------- */
+
+  .matrix {
+    display: grid;
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+    gap: 0;
+    border-top: 1px solid var(--line);
+    background: var(--surface);
+    border-radius: 0 0 10px 10px;
+    border-bottom: 1px solid var(--line);
+    border-left: 1px solid var(--line);
+    border-right: 1px solid var(--line);
+    box-shadow: var(--shadow);
+    overflow: hidden;
+  }
+
+  .col {
+    display: flex;
+    flex-direction: column;
+    border-right: 1px solid var(--line-soft);
+    min-width: 0;
+  }
+  .col:last-child { border-right: 0; }
+
+  .col-head {
+    padding: 14px 14px 12px;
+    border-bottom: 1px solid var(--line-soft);
+    background: var(--surface);
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    position: relative;
+  }
+  .col-head::before {
+    content: "";
+    position: absolute;
+    top: -1px; left: 0; right: 0;
+    height: 2px;
+    background: var(--brass);
+    opacity: .55;
+  }
+  .col:nth-child(2) .col-head::before { opacity: .45; }
+  .col:nth-child(3) .col-head::before { opacity: .35; }
+  .col:nth-child(4) .col-head::before { opacity: .25; }
+  .col:nth-child(5) .col-head::before { opacity: .18; }
+
+  .col-name {
+    font-size: 14px;
+    font-weight: 700;
+    letter-spacing: -.01em;
+  }
+  .col-role {
+    font-size: 11.5px;
+    color: var(--ink-3);
+    line-height: 1.4;
+  }
+
+  .chips {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 10px;
+  }
+
+  .chip {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 6px;
+    width: 100%;
+    padding: 7px 9px;
+    border-radius: 6px;
+    border: 1px solid var(--line);
+    background: var(--surface-2);
+    color: var(--ink-2);
+    font-family: var(--f-mono);
+    font-size: 12.5px;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: -.01em;
+    text-align: left;
+    transition: background .12s, border-color .12s, color .12s, opacity .12s;
+  }
+  .chip:hover { border-color: var(--ink-3); color: var(--ink); }
+
+  .chip .tag {
+    font-family: var(--f-ui);
+    font-size: 9.5px;
+    font-weight: 700;
+    letter-spacing: .06em;
+    padding: 1px 5px;
+    border-radius: 3px;
+    border: 1px solid currentColor;
+    opacity: .75;
+    flex: none;
+  }
+
+  .chip.is-compat {
+    background: var(--good-bg);
+    border-color: var(--good-line);
+    color: var(--good);
+    font-weight: 600;
+  }
+  .chip.is-selected {
+    background: var(--brass-bg);
+    border-color: var(--brass);
+    color: var(--brass-ink);
+    font-weight: 700;
+    box-shadow: inset 0 0 0 1px var(--brass);
+  }
+  .chip.is-off { opacity: .32; }
+  .chip.is-off:hover { opacity: .6; }
+
+  .chip .cond {
+    font-family: var(--f-ui);
+    font-size: 10px;
+    font-weight: 700;
+    color: var(--brass);
+    flex: none;
+  }
+
+  /* ---------- 상세 패널 ---------- */
+
+  .detail {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    box-shadow: var(--shadow);
+    padding: 20px 22px;
+    display: flex;
+    flex-direction: column;
+    gap: 18px;
+  }
+
+  .detail-empty {
+    color: var(--ink-3);
+    font-size: 14px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 0;
+  }
+  .detail-empty::before {
+    content: "↑";
+    font-size: 17px;
+    color: var(--brass);
+  }
+
+  .detail-head {
+    display: flex;
+    align-items: baseline;
+    gap: 12px;
+    flex-wrap: wrap;
+    padding-bottom: 16px;
+    border-bottom: 1px solid var(--line-soft);
+  }
+  .detail-title {
+    font-size: 19px;
+    font-weight: 700;
+    letter-spacing: -.015em;
+  }
+  .detail-title code {
+    font-family: var(--f-mono);
+    font-variant-numeric: tabular-nums;
+    color: var(--brass-ink);
+    background: var(--brass-bg);
+    border: 1px solid var(--brass-line);
+    padding: 1px 7px;
+    border-radius: 5px;
+    font-size: 16px;
+  }
+  .detail-sets { display: flex; gap: 6px; flex-wrap: wrap; }
+
+  .setbadge {
+    font-family: var(--f-mono);
+    font-size: 11.5px;
+    font-weight: 600;
+    padding: 3px 8px;
+    border-radius: 5px;
+    border: 1px solid var(--good-line);
+    background: var(--good-bg);
+    color: var(--good);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .compat-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+    gap: 14px;
+  }
+  .compat-item {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    padding: 12px 14px;
+    border-radius: 8px;
+    background: var(--surface-2);
+    border: 1px solid var(--line-soft);
+  }
+  .compat-item.self {
+    border-color: var(--brass-line);
+    background: var(--brass-bg);
+  }
+  .compat-item h4 {
+    margin: 0;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: .09em;
+    text-transform: uppercase;
+    color: var(--ink-3);
+  }
+  .compat-item.self h4 { color: var(--brass-ink); }
+  .compat-item p {
+    margin: 0;
+    font-family: var(--f-mono);
+    font-size: 13px;
+    line-height: 1.65;
+    color: var(--ink);
+    font-variant-numeric: tabular-nums;
+    word-break: break-word;
+  }
+
+  .notes {
+    display: flex;
+    flex-direction: column;
+    gap: 7px;
+    padding: 13px 15px;
+    border-radius: 8px;
+    background: var(--brass-bg);
+    border: 1px solid var(--brass-line);
+  }
+  .notes h4 {
+    margin: 0;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: .09em;
+    text-transform: uppercase;
+    color: var(--brass-ink);
+  }
+  .notes ul { margin: 0; padding-left: 17px; display: flex; flex-direction: column; gap: 4px; }
+  .notes li { font-size: 13px; color: var(--brass-ink); line-height: 1.5; }
+
+  /* ---------- 릴리스 세트 원장 ---------- */
+
+  .ledger { display: flex; flex-direction: column; gap: 12px; }
+
+  .ledger h2 {
+    margin: 0;
+    font-size: 15px;
+    font-weight: 700;
+    letter-spacing: -.01em;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .ledger h2::after {
+    content: "";
+    flex: 1;
+    height: 1px;
+    background: var(--line);
+  }
+  .ledger-note { margin: 0; font-size: 13px; color: var(--ink-3); max-width: 64ch; }
+
+  .table-wrap {
+    overflow-x: auto;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    background: var(--surface);
+    box-shadow: var(--shadow);
+  }
+
+  table { border-collapse: collapse; width: 100%; min-width: 820px; }
+
+  th, td {
+    padding: 10px 13px;
+    text-align: left;
+    border-bottom: 1px solid var(--line-soft);
+    vertical-align: top;
+  }
+  thead th {
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: .07em;
+    text-transform: uppercase;
+    color: var(--ink-3);
+    background: var(--surface-2);
+    white-space: nowrap;
+    border-bottom: 1px solid var(--line);
+  }
+  tbody tr:last-child td { border-bottom: 0; }
+
+  tbody td {
+    font-family: var(--f-mono);
+    font-size: 12.5px;
+    font-variant-numeric: tabular-nums;
+    color: var(--ink-2);
+  }
+  tbody td.set-id {
+    font-weight: 700;
+    color: var(--ink);
+    white-space: nowrap;
+  }
+
+  tbody tr { transition: background .12s, opacity .12s; }
+  tbody tr.row-on { background: var(--good-bg); }
+  tbody tr.row-on td { color: var(--ink); }
+  tbody tr.row-off { opacity: .34; }
+
+  .status {
+    display: inline-block;
+    font-family: var(--f-ui);
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: .05em;
+    padding: 2px 7px;
+    border-radius: 4px;
+    border: 1px solid var(--line);
+    color: var(--ink-3);
+    white-space: nowrap;
+  }
+  .status.lts { border-color: var(--brass-line); background: var(--brass-bg); color: var(--brass-ink); }
+  .status.latest { border-color: var(--good-line); background: var(--good-bg); color: var(--good); }
+  .status.eol { text-decoration: line-through; opacity: .7; }
+
+  /* ---------- 푸터 ---------- */
+
+  .footer {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    padding-top: 22px;
+    border-top: 1px solid var(--line);
+    font-size: 13px;
+    color: var(--ink-3);
+  }
+  .footer strong { color: var(--ink-2); font-weight: 650; }
+  .footer code {
+    font-family: var(--f-mono);
+    font-size: 12px;
+    background: var(--surface-2);
+    border: 1px solid var(--line-soft);
+    padding: 1px 5px;
+    border-radius: 4px;
+    color: var(--ink-2);
+  }
+  .footer ul { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 5px; }
+
+  @media (max-width: 900px) {
+    .matrix { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .col { border-bottom: 1px solid var(--line-soft); }
+  }
+  @media (max-width: 560px) {
+    .page { padding: 28px 16px 56px; }
+    .matrix { grid-template-columns: 1fr; }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    * { transition: none !important; animation: none !important; }
+  }
+</style>
+
+<div class="page">
+
+  <header class="masthead">
+    <div class="eyebrow">샘플 · 내부 참조 문서</div>
+    <h1>제품군 버전 호환성 매트릭스</h1>
+    <p class="lede">
+      아무 버전이나 누르면 함께 쓸 수 있는 다른 제품 버전이 한 번에 표시됩니다.
+      호환의 기준은 개별 버전 쌍이 아니라 <b>릴리스 세트</b>이며,
+      한 버전이 여러 세트에 속하면 그 세트들의 합집합이 호환 범위가 됩니다.
+    </p>
+    <div class="meta" id="meta"></div>
+  </header>
+
+  <div class="bar">
+    <div class="bar-msg" id="barMsg">버전을 선택하면 호환 범위가 계산됩니다.</div>
+    <div class="legend">
+      <span><i class="swatch sw-sel"></i>선택</span>
+      <span><i class="swatch sw-ok"></i>호환</span>
+      <span><i class="swatch sw-no"></i>비호환</span>
+    </div>
+    <button class="btn-reset" id="resetBtn" disabled>선택 해제</button>
+  </div>
+
+  <div class="matrix" id="matrix"></div>
+
+  <section class="detail" id="detail"></section>
+
+  <section class="ledger">
+    <h2>릴리스 세트 원장</h2>
+    <p class="ledger-note">
+      위 매트릭스가 참조하는 원본 데이터입니다. 버전을 선택하면 해당하는 세트 행만 남습니다.
+      실제 문서로 쓰실 때는 이 표를 단일 진실 공급원으로 두고 관리하시면 됩니다.
+    </p>
+    <div class="table-wrap">
+      <table>
+        <thead><tr id="ledgerHead"></tr></thead>
+        <tbody id="ledgerBody"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <footer class="footer">
+    <p style="margin:0"><strong>이 페이지의 데이터는 전부 샘플입니다.</strong> 제품 역할·버전 번호·지원 종료일 모두 형식을 보여주기 위한 임의값이므로, 실제 값으로 교체해 사용하세요.</p>
+    <ul>
+      <li>제품 추가·이름 변경 → <code>PRODUCTS</code> 배열</li>
+      <li>버전 목록 → <code>VERSIONS</code> 객체 (표시 순서 = 배열 순서)</li>
+      <li>호환 관계 → <code>SETS</code> 배열. 한 세트에 함께 적힌 버전들이 서로 호환됩니다</li>
+      <li>단서 조건 → 버전을 <code>{ v: "2.0.0", note: "…" }</code> 형태로 적으면 <b>※</b> 표시와 함께 주의사항에 노출됩니다</li>
+    </ul>
+  </footer>
+
+</div>
+
+<script>
+(function () {
+  "use strict";
+
+  /* ===== DATA:BEGIN — build_compat.py 가 이 블록을 자동 생성합니다 ===== */
+
+  var PRODUCTS = [
+  {
+    "id": "p1",
+    "name": "콘트라베이스",
+    "role": "오케스트레이션 엔진"
+  },
+  {
+    "id": "p2",
+    "name": "비올라",
+    "role": "모니터링 · 관측"
+  },
+  {
+    "id": "sds",
+    "name": "SDS+",
+    "role": "소프트웨어 정의 스토리지"
+  },
+  {
+    "id": "bf",
+    "name": "BF",
+    "role": "백업 · 페일오버"
+  },
+  {
+    "id": "cmp",
+    "name": "CMP",
+    "role": "클라우드 관리 포털"
+  }
+];
+
+  var VERSIONS = {
+  "p1": [
+    "6.2.0",
+    "6.0.1",
+    "6.0.0",
+    "5.2.1",
+    "5.2.0",
+    "5.0.5",
+    "5.0.2",
+    "5.0.0",
+    "4.4.0",
+    "4.2.3",
+    "4.2.0"
+  ],
+  "p2": [
+    "4.0.0",
+    "3.4.2",
+    "3.4.0",
+    "3.2.0",
+    "3.0.3",
+    "3.0.0",
+    "2.8.0",
+    "2.6.4",
+    "2.6.0"
+  ],
+  "sds": [
+    "3.0.0",
+    "2.4.0",
+    "2.2.0",
+    "2.0.1",
+    "2.0.0",
+    "1.9.0",
+    "1.8.0"
+  ],
+  "bf": [
+    "2.2.0",
+    "2.1.0",
+    "2.0.0",
+    "1.6.0",
+    "1.5.0",
+    "1.4.0"
+  ],
+  "cmp": [
+    "5.2.0",
+    "5.0.1",
+    "5.0.0",
+    "4.4.0",
+    "4.2.1",
+    "4.2.0",
+    "3.11.0",
+    "3.9.2",
+    "3.9.0"
+  ]
+};
+
+  var SETS = [
+  {
+    "id": "R2026.2",
+    "released": "2026-09",
+    "eol": "2027-09",
+    "status": "latest",
+    "statusLabel": "최신",
+    "v": {
+      "p1": [
+        "6.2.0"
+      ],
+      "p2": [
+        "4.0.0"
+      ],
+      "sds": [
+        "3.0.0"
+      ],
+      "bf": [
+        "2.2.0"
+      ],
+      "cmp": [
+        "5.2.0"
+      ]
+    }
+  },
+  {
+    "id": "R2026.1",
+    "released": "2026-03",
+    "eol": "2028-03",
+    "status": "lts",
+    "statusLabel": "LTS",
+    "v": {
+      "p1": [
+        "6.0.1",
+        "6.0.0"
+      ],
+      "p2": [
+        "3.4.2",
+        "3.4.0"
+      ],
+      "sds": [
+        {
+          "v": "2.4.0",
+          "note": "SDS+ 2.4.0 은 콘트라베이스 6.0.1 이상에서만 스냅샷 오프로딩을 지원합니다."
+        }
+      ],
+      "bf": [
+        "2.1.0"
+      ],
+      "cmp": [
+        "5.0.1",
+        "5.0.0"
+      ]
+    }
+  },
+  {
+    "id": "R2025.2",
+    "released": "2025-09",
+    "eol": "2026-09",
+    "status": "active",
+    "statusLabel": "지원중",
+    "v": {
+      "p1": [
+        "5.2.1",
+        "5.2.0",
+        "5.0.5"
+      ],
+      "p2": [
+        "3.2.0"
+      ],
+      "sds": [
+        "2.2.0"
+      ],
+      "bf": [
+        {
+          "v": "2.0.0",
+          "note": "BF 2.0.0 부터 백업 카탈로그 스키마가 변경되어 1.x 로 되돌릴 수 없습니다."
+        }
+      ],
+      "cmp": [
+        "4.4.0",
+        "4.2.1"
+      ]
+    }
+  },
+  {
+    "id": "R2025.1",
+    "released": "2025-03",
+    "eol": "2027-03",
+    "status": "lts",
+    "statusLabel": "LTS",
+    "v": {
+      "p1": [
+        "5.0.5",
+        "5.0.2",
+        "5.0.0"
+      ],
+      "p2": [
+        "3.0.3",
+        "3.0.0"
+      ],
+      "sds": [
+        "2.0.1",
+        "2.0.0"
+      ],
+      "bf": [
+        "1.6.0"
+      ],
+      "cmp": [
+        "4.2.1",
+        "4.2.0"
+      ]
+    }
+  },
+  {
+    "id": "R2024.2",
+    "released": "2024-09",
+    "eol": "2025-09",
+    "status": "eol",
+    "statusLabel": "지원종료",
+    "v": {
+      "p1": [
+        "4.4.0"
+      ],
+      "p2": [
+        "2.8.0"
+      ],
+      "sds": [
+        "1.9.0"
+      ],
+      "bf": [
+        "1.5.0"
+      ],
+      "cmp": [
+        "3.11.0"
+      ]
+    }
+  },
+  {
+    "id": "R2024.1",
+    "released": "2024-03",
+    "eol": "2026-03",
+    "status": "eol",
+    "statusLabel": "지원종료",
+    "v": {
+      "p1": [
+        "4.2.3",
+        "4.2.0"
+      ],
+      "p2": [
+        "2.6.4",
+        "2.6.0"
+      ],
+      "sds": [
+        "1.8.0"
+      ],
+      "bf": [
+        "1.4.0"
+      ],
+      "cmp": [
+        "3.9.2",
+        "3.9.0"
+      ]
+    }
+  }
+];
+
+  /* ===== DATA:END ===== */
+
+  /* ===================== 인덱스 구성 ===================== */
+
+  function norm(entry) {
+    return typeof entry === "string" ? { v: entry, note: null } : entry;
+  }
+
+  var PROD_BY_ID = {};
+  PRODUCTS.forEach(function (p) { PROD_BY_ID[p.id] = p; });
+
+  // "cb|5.0.5" -> [세트, …]
+  var setsByVersion = {};
+  // "cb|5.0.5" -> [단서 문구, …]
+  var notesByVersion = {};
+
+  SETS.forEach(function (set) {
+    PRODUCTS.forEach(function (p) {
+      (set.v[p.id] || []).forEach(function (raw) {
+        var e = norm(raw);
+        var key = p.id + "|" + e.v;
+        (setsByVersion[key] = setsByVersion[key] || []).push(set);
+        if (e.note) (notesByVersion[key] = notesByVersion[key] || []).push(e.note);
+      });
+    });
+  });
+
+  function versionsOf(set, pid) {
+    return (set.v[pid] || []).map(norm).map(function (e) { return e.v; });
+  }
+
+  /* ===================== 상태 ===================== */
+
+  var selected = null; // { pid, ver }
+
+  var elMatrix = document.getElementById("matrix");
+  var elDetail = document.getElementById("detail");
+  var elBarMsg = document.getElementById("barMsg");
+  var elReset = document.getElementById("resetBtn");
+  var elMeta = document.getElementById("meta");
+
+  /* ===================== 매트릭스 렌더 ===================== */
+
+  var chipEls = [];
+
+  PRODUCTS.forEach(function (p) {
+    var col = document.createElement("div");
+    col.className = "col";
+
+    var head = document.createElement("div");
+    head.className = "col-head";
+    var nm = document.createElement("div");
+    nm.className = "col-name";
+    nm.textContent = p.name;
+    var rl = document.createElement("div");
+    rl.className = "col-role";
+    rl.textContent = p.role;
+    head.appendChild(nm);
+    head.appendChild(rl);
+    col.appendChild(head);
+
+    var chips = document.createElement("div");
+    chips.className = "chips";
+
+    VERSIONS[p.id].forEach(function (ver) {
+      var key = p.id + "|" + ver;
+      var btn = document.createElement("button");
+      btn.className = "chip";
+      btn.type = "button";
+      btn.dataset.pid = p.id;
+      btn.dataset.ver = ver;
+
+      var label = document.createElement("span");
+      label.textContent = ver;
+      btn.appendChild(label);
+
+      if (notesByVersion[key]) {
+        var cond = document.createElement("span");
+        cond.className = "cond";
+        cond.textContent = "※";
+        cond.title = "단서 조건 있음";
+        btn.appendChild(cond);
+      }
+
+      var owning = setsByVersion[key] || [];
+      var isLts = owning.some(function (s) { return s.status === "lts"; });
+      var allEol = owning.length > 0 && owning.every(function (s) { return s.status === "eol"; });
+      if (isLts || allEol) {
+        var tag = document.createElement("span");
+        tag.className = "tag";
+        tag.textContent = isLts ? "LTS" : "EOL";
+        btn.appendChild(tag);
+      }
+
+      btn.addEventListener("click", function () {
+        if (selected && selected.pid === p.id && selected.ver === ver) {
+          selected = null;
+        } else {
+          selected = { pid: p.id, ver: ver };
+        }
+        render();
+      });
+
+      chips.appendChild(btn);
+      chipEls.push(btn);
+    });
+
+    col.appendChild(chips);
+    elMatrix.appendChild(col);
+  });
+
+  /* ===================== 원장 테이블 렌더 ===================== */
+
+  var headRow = document.getElementById("ledgerHead");
+  ["릴리스 세트", "상태", "출시", "지원 종료"].concat(
+    PRODUCTS.map(function (p) { return p.name; })
+  ).forEach(function (label) {
+    var th = document.createElement("th");
+    th.textContent = label;
+    headRow.appendChild(th);
+  });
+
+  var body = document.getElementById("ledgerBody");
+  var rowEls = {};
+
+  SETS.forEach(function (set) {
+    var tr = document.createElement("tr");
+    rowEls[set.id] = tr;
+
+    var tdId = document.createElement("td");
+    tdId.className = "set-id";
+    tdId.textContent = set.id;
+    tr.appendChild(tdId);
+
+    var tdSt = document.createElement("td");
+    var st = document.createElement("span");
+    st.className = "status " + set.status;
+    st.textContent = set.statusLabel;
+    tdSt.appendChild(st);
+    tr.appendChild(tdSt);
+
+    [set.released, set.eol].forEach(function (val) {
+      var td = document.createElement("td");
+      td.textContent = val;
+      tr.appendChild(td);
+    });
+
+    PRODUCTS.forEach(function (p) {
+      var td = document.createElement("td");
+      td.textContent = versionsOf(set, p.id).join(", ") || "—";
+      tr.appendChild(td);
+    });
+
+    body.appendChild(tr);
+  });
+
+  /* ===================== 메타 통계 ===================== */
+
+  var totalVersions = PRODUCTS.reduce(function (n, p) { return n + VERSIONS[p.id].length; }, 0);
+  var ltsCount = SETS.filter(function (s) { return s.status === "lts"; }).length;
+  [
+    ["제품", PRODUCTS.length + "종"],
+    ["등록 버전", totalVersions + "개"],
+    ["릴리스 세트", SETS.length + "개"],
+    ["LTS", ltsCount + "개"],
+    ["기준일", "2026-08-31"]
+  ].forEach(function (pair) {
+    var span = document.createElement("span");
+    var b = document.createElement("b");
+    b.textContent = pair[1];
+    span.appendChild(document.createTextNode(pair[0] + " "));
+    span.appendChild(b);
+    elMeta.appendChild(span);
+  });
+
+  /* ===================== 렌더 ===================== */
+
+  function render() {
+    var key = selected ? selected.pid + "|" + selected.ver : null;
+    var matched = key ? (setsByVersion[key] || []) : [];
+    var matchedIds = {};
+    matched.forEach(function (s) { matchedIds[s.id] = true; });
+
+    // 호환 버전 합집합
+    var compat = {};
+    matched.forEach(function (set) {
+      PRODUCTS.forEach(function (p) {
+        versionsOf(set, p.id).forEach(function (v) { compat[p.id + "|" + v] = true; });
+      });
+    });
+
+    // 칩 상태
+    chipEls.forEach(function (btn) {
+      var k = btn.dataset.pid + "|" + btn.dataset.ver;
+      btn.classList.remove("is-selected", "is-compat", "is-off");
+      btn.removeAttribute("aria-pressed");
+      if (!selected) return;
+      if (k === key) {
+        btn.classList.add("is-selected");
+        btn.setAttribute("aria-pressed", "true");
+      } else if (compat[k]) {
+        btn.classList.add("is-compat");
+      } else {
+        btn.classList.add("is-off");
+      }
+    });
+
+    // 원장 행 상태
+    SETS.forEach(function (set) {
+      var tr = rowEls[set.id];
+      tr.classList.remove("row-on", "row-off");
+      if (!selected) return;
+      tr.classList.add(matchedIds[set.id] ? "row-on" : "row-off");
+    });
+
+    elReset.disabled = !selected;
+
+    if (!selected) {
+      elBarMsg.textContent = "버전을 선택하면 호환 범위가 계산됩니다.";
+      elDetail.innerHTML = '<div class="detail-empty">위 매트릭스에서 아무 버전이나 눌러보세요.</div>';
+      return;
+    }
+
+    var prod = PROD_BY_ID[selected.pid];
+    var compatCount = Object.keys(compat).length - 1; // 자기 자신 제외
+
+    elBarMsg.innerHTML = "";
+    elBarMsg.appendChild(document.createTextNode(prod.name + " "));
+    var strong = document.createElement("strong");
+    strong.textContent = selected.ver;
+    elBarMsg.appendChild(strong);
+    elBarMsg.appendChild(document.createTextNode(
+      " 기준 · 릴리스 세트 " + matched.length + "개 · 호환 버전 " + compatCount + "개"
+    ));
+
+    renderDetail(prod, matched, compat, key);
+  }
+
+  function renderDetail(prod, matched, compat, key) {
+    elDetail.innerHTML = "";
+
+    // 헤더
+    var head = document.createElement("div");
+    head.className = "detail-head";
+
+    var title = document.createElement("div");
+    title.className = "detail-title";
+    title.appendChild(document.createTextNode(prod.name + " "));
+    var code = document.createElement("code");
+    code.textContent = selected.ver;
+    title.appendChild(code);
+    head.appendChild(title);
+
+    var badges = document.createElement("div");
+    badges.className = "detail-sets";
+    if (matched.length === 0) {
+      var none = document.createElement("span");
+      none.className = "setbadge";
+      none.style.borderColor = "var(--line)";
+      none.style.background = "var(--surface-2)";
+      none.style.color = "var(--ink-3)";
+      none.textContent = "소속 릴리스 세트 없음";
+      badges.appendChild(none);
+    } else {
+      matched.forEach(function (s) {
+        var b = document.createElement("span");
+        b.className = "setbadge";
+        b.textContent = s.id + " (" + s.statusLabel + ")";
+        badges.appendChild(b);
+      });
+    }
+    head.appendChild(badges);
+    elDetail.appendChild(head);
+
+    // 제품별 호환 버전
+    var grid = document.createElement("div");
+    grid.className = "compat-grid";
+
+    PRODUCTS.forEach(function (p) {
+      var list = VERSIONS[p.id].filter(function (v) { return compat[p.id + "|" + v]; });
+      var item = document.createElement("div");
+      item.className = "compat-item" + (p.id === selected.pid ? " self" : "");
+
+      var h = document.createElement("h4");
+      h.textContent = p.id === selected.pid ? p.name + " (선택)" : p.name;
+      item.appendChild(h);
+
+      var pEl = document.createElement("p");
+      pEl.textContent = list.length ? list.join("  ·  ") : "호환 버전 없음";
+      if (!list.length) pEl.style.color = "var(--ink-3)";
+      item.appendChild(pEl);
+
+      grid.appendChild(item);
+    });
+    elDetail.appendChild(grid);
+
+    // 단서 조건 — 선택 버전 + 호환 대상 전체에서 수집
+    var noteList = [];
+    Object.keys(compat).forEach(function (k) {
+      (notesByVersion[k] || []).forEach(function (n) {
+        if (noteList.indexOf(n) === -1) noteList.push(n);
+      });
+    });
+    (notesByVersion[key] || []).forEach(function (n) {
+      if (noteList.indexOf(n) === -1) noteList.push(n);
+    });
+
+    if (noteList.length) {
+      var box = document.createElement("div");
+      box.className = "notes";
+      var nh = document.createElement("h4");
+      nh.textContent = "단서 조건";
+      box.appendChild(nh);
+      var ul = document.createElement("ul");
+      noteList.forEach(function (n) {
+        var li = document.createElement("li");
+        li.textContent = n;
+        ul.appendChild(li);
+      });
+      box.appendChild(ul);
+      elDetail.appendChild(box);
+    }
+  }
+
+  elReset.addEventListener("click", function () {
+    selected = null;
+    render();
+  });
+
+  document.addEventListener("keydown", function (e) {
+    if (e.key === "Escape" && selected) {
+      selected = null;
+      render();
+    }
+  });
+
+  render();
+})();
+</script>
