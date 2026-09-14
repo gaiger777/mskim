@@ -191,7 +191,9 @@ def parse(out):
 
     r["rank"] = []  # (순위, 번호, 점수, 태그)
     for ln in out.splitlines():
-        m = re.search(r"(\d+)위\s*\|\s*(\d+)번\s*\|\s*([\d.]+)점\s*\|\s*(.*)", ln)
+        # 점수는 음수일 수 있다 — 제외수(ExclusionPattern veto)는 -10000점대로 찍힌다.
+        # 마이너스를 빼먹으면 그 행이 통째로 누락되어 랭킹표가 44행만 나온다.
+        m = re.search(r"(\d+)위\s*\|\s*(\d+)번\s*\|\s*(-?[\d.]+)점\s*\|\s*(.*)", ln)
         if m:
             r["rank"].append((int(m[1]), int(m[2]), m[3], m[4].strip()))
 
