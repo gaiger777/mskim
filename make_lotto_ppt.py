@@ -6,6 +6,10 @@ LottoPatternAnalyzer 콘솔 출력을 파싱해 분석리포트 PPT를 만든다
   · 슬라이드2: 1~45 종합 순위 (자동번호에 쓰인 번호 강조)
   · 슬라이드3: 자동 추천 5게임을 로또 용지(7열×7행)에 표기
   · 마지막 슬라이드: 다음회차 동반 출현 통계(번호 N이 나온 다음 회차 상위 3) + 다음회차 적용
+                    이월수 통계(번호 N 이월 → 다음 회차 상위 3) + 적용 + 이월 회차 단위 순위
+                    보너스 통계(번호 N 보너스 → 다음 회차 당첨 상위 3) + 적용
+  ※ 보너스(번호7)는 당첨번호가 아니다. 모든 집계는 번호1~6만 당첨번호로 쓰고,
+    보너스는 '다음 회차 당첨번호로 나오는지'를 보는 조건으로만 사용한다.
 
 외부 라이브러리 없이 stdlib(zipfile)만으로 OOXML(.pptx)을 직접 작성한다.
 
@@ -229,35 +233,89 @@ def load_draws():
     return draws
 
 
-def calc_followers(draws, base_no):
-    """번호 N이 나온 회차 t에 대해 t+1회 당첨번호를 집계 (t+1 ≤ base_no).
-    반환: [(N, 출현수, [(순위, [번호...], 횟수), ...상위 3순위(동률 포함, 경쟁순위)])]"""
+def load_bonus():
+    """lotto.csv → {회차: 보너스번호}. 보너스는 당첨번호가 아니며,
+    '다음 회차 당첨번호로 나오는지'를 보는 조건으로만 사용한다."""
+    import csv
+    bonus = {}
+    with open(CSV_PATH, encoding="utf-8") as f:
+        rd = csv.reader(f)
+        next(rd, None)
+        for row in rd:
+            try:
+                bonus[int(row[0])] = int(row[7])
+            except (ValueError, IndexError):
+                continue
+    return bonus
+
+
+def rank_counter(counter, top=3):
+    """Counter → 경쟁순위(동률 묶음) [(순위, [번호...], 횟수)] — 순위 top 이내만."""
+    groups = []  # [(횟수, [번호])] 내림차순
+    for m, k in sorted(counter.items(), key=lambda x: (-x[1], x[0])):
+        if groups and groups[-1][0] == k:
+            groups[-1][1].append(m)
+        else:
+            groups.append((k, [m]))
+    ranked, pos = [], 1
+    for k, ms in groups:
+        if pos > top:
+            break
+        ranked.append((pos, ms, k))
+        pos += len(ms)
+    return ranked
+
+
+def carried(draws, t):
+    """t회 이월수 = t-1회와 t회에 연속 당첨된 번호."""
+    return draws[t] & draws.get(t - 1, set())
+
+
+def calc_followers(draws, base_no, carry_only=False, bonus=None):
+    """번호 N 조건 → t+1회 당첨번호 집계 (t+1 ≤ base_no).
+    기본: N이 t회에 당첨 / carry_only: N이 t회에 이월(t-1·t 연속 당첨) /
+    bonus({회차: 보너스}): N이 t회 보너스 번호.
+    반환: [(N, 조건 충족 횟수, [(순위, [번호...], 횟수), ...상위 3순위], N이 t+1회 당첨된 횟수)]"""
     from collections import Counter
     cnt = {n: Counter() for n in range(1, 46)}
     base = Counter()
-    for t, nums in draws.items():
+    for t in draws:
         nxt = draws.get(t + 1)
         if nxt is None or t + 1 > base_no:
             continue
-        for n in nums:
+        if bonus is not None:
+            keys = {bonus[t]} if t in bonus else set()
+        else:
+            keys = carried(draws, t) if carry_only else draws[t]
+        for n in keys:
             base[n] += 1
             cnt[n].update(nxt)
-    out = []
-    for n in range(1, 46):
-        groups = []  # [(횟수, [번호])] 내림차순
-        for m, k in sorted(cnt[n].items(), key=lambda x: (-x[1], x[0])):
-            if groups and groups[-1][0] == k:
-                groups[-1][1].append(m)
-            else:
-                groups.append((k, [m]))
-        ranked, pos = [], 1
-        for k, ms in groups:
-            if pos > 3:
-                break
-            ranked.append((pos, ms, k))
-            pos += len(ms)
-        out.append((n, base[n], ranked))
-    return out
+    return [(n, base[n], rank_counter(cnt[n]), cnt[n][n]) for n in range(1, 46)]
+
+
+def calc_carry_draws(draws, base_no):
+    """이월이 있었던 회차 t를 한 단위로 보고 t+1회 당첨번호를 1회씩 집계.
+    반환: (이월회차 수, [(순위, 번호, 횟수, 비율%, 기준대비 배수)] 45행)
+    기준 = 2~base_no회 전체에서 그 번호가 나온 비율."""
+    from collections import Counter
+    ev, cnt, allc = 0, Counter(), Counter()
+    for t in draws:
+        nxt = draws.get(t + 1)
+        if nxt is None or t + 1 > base_no:
+            continue
+        allc.update(nxt)
+        if carried(draws, t):
+            ev += 1
+            cnt.update(nxt)
+    n_all = sum(1 for t in draws if t + 1 in draws and t + 1 <= base_no)
+    rows, prev, rk = [], None, 0
+    for i, m in enumerate(sorted(range(1, 46), key=lambda x: (-cnt[x], x)), 1):
+        if cnt[m] != prev:
+            rk, prev = i, cnt[m]
+        rate = cnt[m] / ev if ev else 0
+        lift = rate / (allc[m] / n_all) if allc[m] else 0
+        rows.append((rk, m, cnt[m], rate * 100, lift))
+    return ev, rows
 
 
 # ── 2) OOXML 조각 ─────────────────────────────────────────────────────────
@@ -756,11 +814,15 @@ def slide_gaphit(rows, next_no):
     return wrap_slide(sh)
 
 
-def _follow_cells(ranked, b, sz=800):
-    """경쟁순위 상위 3 → 1·2·3위 칸. 동률이 다음 순위를 덮으면 그 칸은 '–'."""
+def _follow_cells(ranked, b, sz=800, max_nums=8):
+    """경쟁순위 상위 3 → 1·2·3위 칸. 동률이 다음 순위를 덮으면 그 칸은 '–'.
+    동률 번호가 max_nums개를 넘으면 앞쪽만 쓰고 '외 n개'로 줄인다(칸 넘침 방지)."""
     cells = [{"t": "–", "sz": sz, "font": "C0C0C0"} for _ in range(3)]
     for pos, ms, k in ranked:
-        txt = f"{', '.join(map(str, ms))} ({k}회·{k / b * 100:.1f}%)" if b else "-"
+        shown = ", ".join(map(str, ms[:max_nums]))
+        if len(ms) > max_nums:
+            shown += f" 외 {len(ms) - max_nums}개"
+        txt = f"{shown} ({k}회·{k / b * 100:.1f}%)" if b else "-"
         if len(ms) > 1:
             txt += " 공동"
         cells[pos - 1] = {"t": txt, "sz": sz, "bold": pos == 1,
@@ -768,55 +830,90 @@ def _follow_cells(ranked, b, sz=800):
     return cells
 
 
-def slides_followers(stats, base_no, latest):
-    """번호 N 출현 → 다음 회차 상위 3 번호 (1~45, 2페이지). 최근 회차 번호 행은 노랑."""
+def slides_followers(stats, base_no, highlight, mode="all", self_rate=None):
+    """번호 N 조건 → 다음 회차 상위 3 번호 (1~45, 2페이지).
+    mode: "all"(N 당첨, 노랑 = 최근 회차 번호) / "carry"(N 이월, 노랑 = 최근 이월수) /
+          "bonus"(N이 보너스, 노랑 = 최근 회차 보너스 — '다음회차 당첨' 칸 추가).
+    self_rate: bonus 모드에서 (보너스가 다음 회차 당첨된 횟수, 전체 회차 수)."""
     pages = [stats[:23], stats[23:]]
-    cols = [800000, 1000000, 3150000, 3150000, 3150000]
+    if mode == "bonus":
+        cols = [700000, 800000, 1150000, 2850000, 2850000, 2850000]
+    else:
+        cols = [800000, 1000000, 3150000, 3150000, 3150000]
     bx = (W - sum(cols)) // 2
+    if mode == "bonus":
+        hit, tot = self_rate or (0, 0)
+        title = "보너스 통계 — 번호 N이 보너스로 나온 다음 회차 상위 3"
+        sub = (f"1~{base_no}회 · N이 t회 보너스 → t+1회 당첨번호(번호1~6) 집계 · "
+               f"보너스가 다음 회차 당첨번호로 나온 비율 {hit}/{tot} = {hit / tot * 100 if tot else 0:.1f}% "
+               f"(기본 13.3%) · 노랑 = {base_no}회 보너스")
+        cnt_label = "보너스"
+        lo = min(st[1] for st in stats)
+        hi = max(st[1] for st in stats)
+        foot = ("※ 보너스 번호는 당첨번호가 아니며, '다음 회차 당첨번호로 나오는지'를 보는 조건으로만 사용합니다. "
+                f"번호당 표본 {lo}~{hi}건 — 참고용 통계.")
+    elif mode == "carry":
+        lo = min(st[1] for st in stats)
+        hi = max(st[1] for st in stats)
+        title = "이월수 통계 — 번호 N이 이월(연속 2회 당첨)된 다음 회차 상위 3"
+        sub = (f"1~{base_no}회 · N이 t-1·t회 연속 당첨 → t+1회 본번호 6개 집계(보너스 제외) · "
+               f"(횟수·N이월 대비%) · 노랑 = {base_no}회 이월수")
+        cnt_label = "이월"
+        foot = (f"※ 이월 표본은 번호당 {lo}~{hi}건으로 작아 공동 순위가 많고 비율 변동이 큽니다. "
+                "기본 확률 6/45 ≈ 13.3% — 참고용 통계.")
+    else:
+        title = "다음회차 동반 출현 통계 — 번호 N이 나온 다음 회차 상위 3"
+        sub = (f"1~{base_no}회 · N이 당첨된 회차의 바로 다음 회차 본번호 6개 집계(보너스 제외) · "
+               f"(횟수·N출현 대비%) · 노랑 = {base_no}회 당첨번호")
+        cnt_label = "출현"
+        foot = ("※ 특정 번호가 다음 회차에 나올 기본 확률은 6/45 ≈ 13.3%. 45개 중 최댓값을 고르므로 "
+                "무작위여도 1위는 18~20% 수준이 나옵니다 — 참고용 통계.")
     out_slides = []
     for pi, blk in enumerate(pages):
         sh, fid = [], 2
         sh.append(textbox(fid, "title", 400000, 200000, W - 800000, 650000,
-                          run(f"다음회차 동반 출현 통계 — 번호 N이 나온 다음 회차 상위 3  ({pi + 1}/2)",
-                              2000, HDR, True))); fid += 1
+                          run(f"{title}  ({pi + 1}/2)", 2000, HDR, True))); fid += 1
         sh.append(textbox(fid, "sub", 400000, 800000, W - 800000, 400000,
-                          run(f"1~{base_no}회 · N이 당첨된 회차의 바로 다음 회차 본번호 6개 집계(보너스 제외) · "
-                              f"(횟수·N출현 대비%) · 노랑 = {base_no}회 당첨번호", 1100, "808080"))); fid += 1
-        rows = [hdr_cells(["N", "출현", "1위", "2위", "3위"])]
-        for n, b, ranked in blk:
-            hl = n in latest
-            rows.append([{"t": f"{n}", "sz": 900, "bold": True,
-                          "fill": "FFF2CC" if hl else None, "font": "BF8F00" if hl else HDR},
-                         {"t": f"{b}", "sz": 800, "font": "808080"}] + _follow_cells(ranked, b))
+                          run(sub, 1100, "808080"))); fid += 1
+        hdr = ["N", cnt_label] + (["다음회차 당첨"] if mode == "bonus" else []) + ["1위", "2위", "3위"]
+        rows = [hdr_cells(hdr)]
+        for n, b, ranked, self_hit in blk:
+            hl = n in highlight
+            row = [{"t": f"{n}", "sz": 900, "bold": True,
+                    "fill": "FFF2CC" if hl else None, "font": "BF8F00" if hl else HDR},
+                   {"t": f"{b}", "sz": 800, "font": "808080"}]
+            if mode == "bonus":
+                row.append({"t": f"{self_hit}회 ({self_hit / b * 100:.0f}%)" if b else "-", "sz": 800,
+                            "font": "C00000" if b and self_hit / b >= 0.2 else "333333"})
+            rows.append(row + _follow_cells(ranked, b, max_nums=6 if mode == "bonus" else 8))
         sh.append(gtable(fid, f"fl{pi}", bx, 1250000, cols, rows, row_h=200000)); fid += 1
-        foot = ("※ 특정 번호가 다음 회차에 나올 기본 확률은 6/45 ≈ 13.3%. 45개 중 최댓값을 고르므로 "
-                "무작위여도 1위는 18~20% 수준이 나옵니다 — 참고용 통계.")
         sh.append(textbox(fid, "foot", 400000, H - 540000, W - 800000, 440000,
                           run(foot, 1000, "A6A6A6"))); fid += 1
         out_slides.append(wrap_slide(sh))
     return out_slides
 
 
-def slide_follow_apply(stats, base_no, latest, next_no):
-    """최근 회차 당첨번호 6개의 '다음회차 상위 3'을 모아 다음회차 후보로 정리."""
-    by_n = {n: (b, ranked) for n, b, ranked in stats}
+def slide_follow_apply(stats, base_no, keys, next_no, mode="all"):
+    """최근 회차 번호(이월수·보너스) 각각의 '다음회차 상위 3'을 모아 다음회차 후보로 정리."""
+    by_n = {st[0]: (st[1], st[2]) for st in stats}
+    what = {"carry": "이월수", "bonus": "보너스"}.get(mode, "당첨번호")
     sh, fid = [], 2
     sh.append(textbox(fid, "title", 400000, 200000, W - 800000, 650000,
-                      run(f"{next_no}회차 적용 — {base_no}회 당첨번호 기준 다음회차 동반 후보", 2000, HDR, True))); fid += 1
+                      run(f"{next_no}회차 적용 — {base_no}회 {what} 기준 다음회차 후보", 2000, HDR, True))); fid += 1
     sh.append(textbox(fid, "sub", 400000, 800000, W - 800000, 400000,
-                      run(f"{base_no}회 당첨번호: " + ", ".join(map(str, sorted(latest))) +
+                      run(f"{base_no}회 {what}: " + ", ".join(map(str, sorted(keys))) +
                           " · 오른쪽 표 = 여러 번호의 상위 3에 겹쳐 등장한 후보", 1100, "808080"))); fid += 1
 
     lcols = [1000000, 1880000, 1880000, 1880000]
     rcols = [900000, 900000, 2550000]
     gap = 300000
     bx = (W - sum(lcols) - gap - sum(rcols)) // 2
-    lrows = [hdr_cells([f"{base_no}회 번호", "1위", "2위", "3위"])]
+    lrows = [hdr_cells([f"{base_no}회 {what if mode != 'all' else '번호'}", "1위", "2위", "3위"])]
     agg = {}  # 후보 → [(N, 횟수)]
-    for n in sorted(latest):
+    for n in sorted(keys):
         b, ranked = by_n[n]
         lrows.append([{"t": f"{n}", "sz": 1000, "bold": True, "fill": "FFF2CC", "font": "BF8F00"}]
-                     + _follow_cells(ranked, b, sz=800))
+                     + _follow_cells(ranked, b, sz=800, max_nums=5))
         for pos, ms, k in ranked:
             for m in ms:
                 agg.setdefault(m, []).append((n, k))
@@ -832,8 +929,46 @@ def slide_follow_apply(stats, base_no, latest, next_no):
             {"t": ", ".join(f"{n}→{k}" for n, k in src), "sz": 800, "algn": "l", "font": "595959"},
         ])
     sh.append(gtable(fid, "fa_r", bx + sum(lcols) + gap, 1350000, rcols, rrows, row_h=300000)); fid += 1
-    foot = ("※ 겹침 = 최근 회차 번호 6개 중 몇 개의 '다음회차 상위 3'에 들어갔는지(빨강 = 2개 이상). "
-            "과거 동반 출현 빈도이며 적중을 보장하지 않습니다.")
+    foot = (f"※ 겹침 = {base_no}회 {what} 중 몇 개의 '다음회차 상위 3'에 들어갔는지(빨강 = 2개 이상). "
+            "과거 출현 빈도이며 적중을 보장하지 않습니다.")
+    sh.append(textbox(fid, "foot", 400000, H - 540000, W - 800000, 440000,
+                      run(foot, 1000, "A6A6A6"))); fid += 1
+    return wrap_slide(sh)
+
+
+def slide_carry_draws(ev, rows, base_no, next_no, latest_carry):
+    """이월 회차 단위 — 이월이 있었던 회차의 다음 회차에 나온 번호 1~45 순위 (15행×3블록)."""
+    sh, fid = [], 2
+    sh.append(textbox(fid, "title", 400000, 200000, W - 800000, 650000,
+                      run("이월 회차 단위 통계 — 이월이 있었던 회차의 다음 회차 출현 순위", 2000, HDR, True))); fid += 1
+    if latest_carry:
+        note = (f"{base_no}회 이월수 {', '.join(map(str, sorted(latest_carry)))} → "
+                f"{next_no}회는 이 통계의 적용 대상")
+    else:
+        note = f"{base_no}회는 이월수 없음 → {next_no}회에는 직접 적용되지 않음"
+    sh.append(textbox(fid, "sub", 400000, 800000, W - 800000, 400000,
+                      run(f"1~{base_no}회 중 이월수가 1개 이상인 회차 {ev}회 · 다음 회차 본번호를 회차당 1번씩 집계 · "
+                          f"기준대비 = 전체 회차 출현율 대비 배수 · {note}", 1050, "808080"))); fid += 1
+    cols = [600000, 650000, 750000, 850000, 900000]
+    gap = 250000
+    bw = sum(cols)
+    bx = (W - bw * 3 - gap * 2) // 2
+    for bi in range(3):
+        trows = [hdr_cells(["순위", "번호", "횟수", "비율", "기준대비"], sz=850)]
+        for rk, m, k, rate, lift in rows[bi * 15:(bi + 1) * 15]:
+            top = rk <= 3
+            trows.append([
+                {"t": f"{rk}", "sz": 850, "bold": top},
+                {"t": f"{m}", "sz": 950, "bold": True, "font": "C00000" if top else HDR,
+                 "fill": "FFF2CC" if top else None},
+                {"t": f"{k}", "sz": 850},
+                {"t": f"{rate:.1f}%", "sz": 850},
+                {"t": f"{lift:.2f}", "sz": 850, "bold": lift >= 1.1,
+                 "font": "C00000" if lift >= 1.1 else ("808080" if lift < 1 else "333333")},
+            ])
+        sh.append(gtable(fid, f"cd{bi}", bx + bi * (bw + gap), 1350000, cols, trows, row_h=270000)); fid += 1
+    foot = ("※ 비율 = 이월 회차 중 다음 회차에 그 번호가 나온 비율(기본 6/45 ≈ 13.3%). "
+            "기준대비 1.00 = 평소와 같음, 빨강 = 1.10배 이상 — 참고용 통계.")
     sh.append(textbox(fid, "foot", 400000, H - 540000, W - 800000, 440000,
                       run(foot, 1000, "A6A6A6"))); fid += 1
     return wrap_slide(sh)
@@ -1040,6 +1175,27 @@ def main():
         slides += slides_followers(fstats, base, draws[base])
         slides += [slide_follow_apply(fstats, base, draws[base], r["next_no"])]
         print(f"동반출현: 1~{base}회 집계 / 45행 + {base}회 적용")
+
+        # 이월수 통계: 번호별(N 이월 → 다음 회차 상위 3) + 이월 회차 단위
+        cstats = calc_followers(draws, base, carry_only=True)
+        latest_carry = carried(draws, base)
+        slides += slides_followers(cstats, base, latest_carry, mode="carry")
+        if latest_carry:
+            slides += [slide_follow_apply(cstats, base, latest_carry, r["next_no"], mode="carry")]
+        ev, crows = calc_carry_draws(draws, base)
+        slides += [slide_carry_draws(ev, crows, base, r["next_no"], latest_carry)]
+        print(f"이월통계: 번호별 45행 / 이월회차 {ev}회 / {base}회 이월수 {sorted(latest_carry)}")
+
+        # 보너스 통계: 보너스는 당첨번호가 아니므로 '다음 회차 당첨번호로 나오는지' 조건으로만 사용
+        bonus = load_bonus()
+        bstats = calc_followers(draws, base, bonus=bonus)
+        pairs = [t for t in bonus if t + 1 in draws and t + 1 <= base]
+        bhit = sum(1 for t in pairs if bonus[t] in draws[t + 1])
+        slides += slides_followers(bstats, base, {bonus[base]} if base in bonus else set(),
+                                   mode="bonus", self_rate=(bhit, len(pairs)))
+        if base in bonus:
+            slides += [slide_follow_apply(bstats, base, {bonus[base]}, r["next_no"], mode="bonus")]
+        print(f"보너스통계: 다음회차 당첨 {bhit}/{len(pairs)} / {base}회 보너스 {bonus.get(base)}")
 
     parts = {
         "[Content_Types].xml": content_types(len(slides)),

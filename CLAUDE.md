@@ -27,7 +27,7 @@ There are no tests, no linter config, and no CI.
 
 `LottoPatternAnalyzer.loadDrawData` hard-codes the relative path `src/resources/lotto.csv`. The program **must be launched with the project root as the working directory** or it will print "데이터를 로드할 수 없습니다." and exit. If you change the launch CWD or move the CSV, update the literal in `LottoPatternAnalyzer.main` (line ~37).
 
-`lotto.csv` format: header row `회차,번호1..6,번호7`, then one row per draw with columns `[drawNo, n1..n6, bonus]`. The bonus column is read but discarded; only the 6 main numbers feed the analyzers. The loader silently skips any row with fewer than 7 columns or non-integer fields, then sorts by `drawNo` ascending.
+`lotto.csv` format: header row `회차,번호1..6,번호7`, then one row per draw with columns `[drawNo, n1..n6, bonus]`. The bonus column (`번호7`) is **not** a winning number: the Java loader never reads it, and every statistic treats only `번호1..6` as winning numbers. The bonus may only be used as a condition — "does draw t's bonus appear among draw t+1's winning numbers" (see `load_bonus` / bonus slides in `make_lotto_ppt.py`). The loader silently skips any row with fewer than 7 columns or non-integer fields, then sorts by `drawNo` ascending.
 
 ## Architecture
 
