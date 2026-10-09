@@ -5,6 +5,7 @@ LottoPatternAnalyzer 콘솔 출력을 파싱해 분석리포트 PPT를 만든다
   · 슬라이드1: 패턴별 효과크기(z) 순위 + 순위그룹 분포 + 다음회차 요약
   · 슬라이드2: 1~45 종합 순위 (자동번호에 쓰인 번호 강조)
   · 슬라이드3: 자동 추천 5게임을 로또 용지(7열×7행)에 표기
+  · 마지막 슬라이드: 다음회차 동반 출현 통계(번호 N이 나온 다음 회차 상위 3) + 다음회차 적용
 
 외부 라이브러리 없이 stdlib(zipfile)만으로 OOXML(.pptx)을 직접 작성한다.
 
@@ -19,6 +20,7 @@ import zipfile
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 CP = os.path.join(ROOT, "out", "production", "mskim")
+CSV_PATH = os.path.join(ROOT, "src", "resources", "lotto.csv")
 GAP_REPEAT_WINDOW = 195
 
 W, H = 12192000, 6858000  # 16:9 슬라이드 (EMU)
@@ -210,6 +212,52 @@ def parse(out):
         if m:
             r["games"].append((m[1], sorted(int(x) for x in m[2].split(","))))
     return r
+
+
+def load_draws():
+    """lotto.csv → {회차: {본번호6}}. 보너스는 분석기와 동일하게 제외."""
+    import csv
+    draws = {}
+    with open(CSV_PATH, encoding="utf-8") as f:
+        rd = csv.reader(f)
+        next(rd, None)
+        for row in rd:
+            try:
+                draws[int(row[0])] = {int(x) for x in row[1:7]}
+            except (ValueError, IndexError):
+                continue
+    return draws
+
+
+def calc_followers(draws, base_no):
+    """번호 N이 나온 회차 t에 대해 t+1회 당첨번호를 집계 (t+1 ≤ base_no).
+    반환: [(N, 출현수, [(순위, [번호...], 횟수), ...상위 3순위(동률 포함, 경쟁순위)])]"""
+    from collections import Counter
+    cnt = {n: Counter() for n in range(1, 46)}
+    base = Counter()
+    for t, nums in draws.items():
+        nxt = draws.get(t + 1)
+        if nxt is None or t + 1 > base_no:
+            continue
+        for n in nums:
+            base[n] += 1
+            cnt[n].update(nxt)
+    out = []
+    for n in range(1, 46):
+        groups = []  # [(횟수, [번호])] 내림차순
+        for m, k in sorted(cnt[n].items(), key=lambda x: (-x[1], x[0])):
+            if groups and groups[-1][0] == k:
+                groups[-1][1].append(m)
+            else:
+                groups.append((k, [m]))
+        ranked, pos = [], 1
+        for k, ms in groups:
+            if pos > 3:
+                break
+            ranked.append((pos, ms, k))
+            pos += len(ms)
+        out.append((n, base[n], ranked))
+    return out
 
 
 # ── 2) OOXML 조각 ─────────────────────────────────────────────────────────
@@ -708,6 +756,89 @@ def slide_gaphit(rows, next_no):
     return wrap_slide(sh)
 
 
+def _follow_cells(ranked, b, sz=800):
+    """경쟁순위 상위 3 → 1·2·3위 칸. 동률이 다음 순위를 덮으면 그 칸은 '–'."""
+    cells = [{"t": "–", "sz": sz, "font": "C0C0C0"} for _ in range(3)]
+    for pos, ms, k in ranked:
+        txt = f"{', '.join(map(str, ms))} ({k}회·{k / b * 100:.1f}%)" if b else "-"
+        if len(ms) > 1:
+            txt += " 공동"
+        cells[pos - 1] = {"t": txt, "sz": sz, "bold": pos == 1,
+                          "font": "C00000" if pos == 1 else "333333"}
+    return cells
+
+
+def slides_followers(stats, base_no, latest):
+    """번호 N 출현 → 다음 회차 상위 3 번호 (1~45, 2페이지). 최근 회차 번호 행은 노랑."""
+    pages = [stats[:23], stats[23:]]
+    cols = [800000, 1000000, 3150000, 3150000, 3150000]
+    bx = (W - sum(cols)) // 2
+    out_slides = []
+    for pi, blk in enumerate(pages):
+        sh, fid = [], 2
+        sh.append(textbox(fid, "title", 400000, 200000, W - 800000, 650000,
+                          run(f"다음회차 동반 출현 통계 — 번호 N이 나온 다음 회차 상위 3  ({pi + 1}/2)",
+                              2000, HDR, True))); fid += 1
+        sh.append(textbox(fid, "sub", 400000, 800000, W - 800000, 400000,
+                          run(f"1~{base_no}회 · N이 당첨된 회차의 바로 다음 회차 본번호 6개 집계(보너스 제외) · "
+                              f"(횟수·N출현 대비%) · 노랑 = {base_no}회 당첨번호", 1100, "808080"))); fid += 1
+        rows = [hdr_cells(["N", "출현", "1위", "2위", "3위"])]
+        for n, b, ranked in blk:
+            hl = n in latest
+            rows.append([{"t": f"{n}", "sz": 900, "bold": True,
+                          "fill": "FFF2CC" if hl else None, "font": "BF8F00" if hl else HDR},
+                         {"t": f"{b}", "sz": 800, "font": "808080"}] + _follow_cells(ranked, b))
+        sh.append(gtable(fid, f"fl{pi}", bx, 1250000, cols, rows, row_h=200000)); fid += 1
+        foot = ("※ 특정 번호가 다음 회차에 나올 기본 확률은 6/45 ≈ 13.3%. 45개 중 최댓값을 고르므로 "
+                "무작위여도 1위는 18~20% 수준이 나옵니다 — 참고용 통계.")
+        sh.append(textbox(fid, "foot", 400000, H - 540000, W - 800000, 440000,
+                          run(foot, 1000, "A6A6A6"))); fid += 1
+        out_slides.append(wrap_slide(sh))
+    return out_slides
+
+
+def slide_follow_apply(stats, base_no, latest, next_no):
+    """최근 회차 당첨번호 6개의 '다음회차 상위 3'을 모아 다음회차 후보로 정리."""
+    by_n = {n: (b, ranked) for n, b, ranked in stats}
+    sh, fid = [], 2
+    sh.append(textbox(fid, "title", 400000, 200000, W - 800000, 650000,
+                      run(f"{next_no}회차 적용 — {base_no}회 당첨번호 기준 다음회차 동반 후보", 2000, HDR, True))); fid += 1
+    sh.append(textbox(fid, "sub", 400000, 800000, W - 800000, 400000,
+                      run(f"{base_no}회 당첨번호: " + ", ".join(map(str, sorted(latest))) +
+                          " · 오른쪽 표 = 여러 번호의 상위 3에 겹쳐 등장한 후보", 1100, "808080"))); fid += 1
+
+    lcols = [1000000, 1880000, 1880000, 1880000]
+    rcols = [900000, 900000, 2550000]
+    gap = 300000
+    bx = (W - sum(lcols) - gap - sum(rcols)) // 2
+    lrows = [hdr_cells([f"{base_no}회 번호", "1위", "2위", "3위"])]
+    agg = {}  # 후보 → [(N, 횟수)]
+    for n in sorted(latest):
+        b, ranked = by_n[n]
+        lrows.append([{"t": f"{n}", "sz": 1000, "bold": True, "fill": "FFF2CC", "font": "BF8F00"}]
+                     + _follow_cells(ranked, b, sz=800))
+        for pos, ms, k in ranked:
+            for m in ms:
+                agg.setdefault(m, []).append((n, k))
+    sh.append(gtable(fid, "fa_l", bx, 1350000, lcols, lrows, row_h=380000)); fid += 1
+
+    cands = sorted(agg.items(), key=lambda x: (-len(x[1]), -sum(k for _, k in x[1]), x[0]))[:10]
+    rrows = [hdr_cells(["후보", "겹침", "근거 (N→횟수)"])]
+    for m, src in cands:
+        multi = len(src) >= 2
+        rrows.append([
+            {"t": f"{m}", "sz": 1000, "bold": True, "font": "C00000" if multi else HDR},
+            {"t": f"{len(src)}", "sz": 900, "bold": multi},
+            {"t": ", ".join(f"{n}→{k}" for n, k in src), "sz": 800, "algn": "l", "font": "595959"},
+        ])
+    sh.append(gtable(fid, "fa_r", bx + sum(lcols) + gap, 1350000, rcols, rrows, row_h=300000)); fid += 1
+    foot = ("※ 겹침 = 최근 회차 번호 6개 중 몇 개의 '다음회차 상위 3'에 들어갔는지(빨강 = 2개 이상). "
+            "과거 동반 출현 빈도이며 적중을 보장하지 않습니다.")
+    sh.append(textbox(fid, "foot", 400000, H - 540000, W - 800000, 440000,
+                      run(foot, 1000, "A6A6A6"))); fid += 1
+    return wrap_slide(sh)
+
+
 # ── 4) 정적 패키지 파트 ────────────────────────────────────────────────────
 def content_types(n_slides):
     slides = "".join(
@@ -901,6 +1032,15 @@ def main():
     gh = slide_gaphit(parse_gaphit(gc_out), r["next_no"])
     if gh:
         slides += [gh]
+
+    # 다음회차 동반 출현 통계 (CSV 직접 집계)
+    draws = load_draws()
+    if base in draws:
+        fstats = calc_followers(draws, base)
+        slides += slides_followers(fstats, base, draws[base])
+        slides += [slide_follow_apply(fstats, base, draws[base], r["next_no"])]
+        print(f"동반출현: 1~{base}회 집계 / 45행 + {base}회 적용")
+
     parts = {
         "[Content_Types].xml": content_types(len(slides)),
         "_rels/.rels": RELS_ROOT,
