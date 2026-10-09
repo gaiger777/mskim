@@ -8,6 +8,7 @@ LottoPatternAnalyzer 콘솔 출력을 파싱해 분석리포트 PPT를 만든다
   · 마지막 슬라이드: 다음회차 동반 출현 통계(번호 N이 나온 다음 회차 상위 3) + 다음회차 적용
                     이월수 통계(번호 N 이월 → 다음 회차 상위 3) + 적용 + 이월 회차 단위 순위
                     보너스 통계(번호 N 보너스 → 다음 회차 당첨 상위 3) + 적용
+                    타이밍 통계(패턴별 미출현 기간 → 다음 회차 출현 확률) 요약·표·구간별 확률
   ※ 보너스(번호7)는 당첨번호가 아니다. 모든 집계는 번호1~6만 당첨번호로 쓰고,
     보너스는 '다음 회차 당첨번호로 나오는지'를 보는 조건으로만 사용한다.
 
@@ -316,6 +317,161 @@ def calc_carry_draws(draws, base_no):
         lift = rate / (allc[m] / n_all) if allc[m] else 0
         rows.append((rk, m, cnt[m], rate * 100, lift))
     return ev, rows
+
+
+# ── 타이밍 통계: 패턴이 k회 연속 미출현일 때 다음 회차 출현 확률 ──────────
+TWINS = {11, 22, 33, 44}
+MIRROR_PAIRS = [(12, 21), (13, 31), (14, 41), (23, 32), (24, 42), (34, 43)]
+MIRROR_MAP = {a: b for x, y in MIRROR_PAIRS for a, b in ((x, y), (y, x))}
+PRIMES = {2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43}
+BANDS = [("단번대(1-10)", 1, 10), ("10번대(11-20)", 11, 20), ("20번대(21-30)", 21, 30),
+         ("30번대(31-40)", 31, 40), ("40번대(41-45)", 41, 45)]
+TIMING_MIN_N = 15  # 해당 미출현 길이의 표본이 이보다 적으면 '≥k'로 넓혀서 추정
+
+
+def _has_run(nums, k):
+    s = sorted(nums)
+    run = 1
+    for a, b in zip(s, s[1:]):
+        run = run + 1 if b == a + 1 else 1
+        if run >= k:
+            return True
+    return False
+
+
+def _band_cnt(nums, lo, hi):
+    return sum(lo <= x <= hi for x in nums)
+
+
+def timing_events(draws, bonus):
+    """타이밍 대상 패턴 [(구분, 이름, f(t)->bool)]. 당첨번호는 번호1~6만, 보너스는 '전회 보너스 당첨' 조건에만."""
+    from collections import Counter
+    d = draws
+    prev = lambda t: d.get(t - 1, set())
+    ld = lambda t: Counter(x % 10 for x in d[t])
+    ev = [
+        ("구조", "쌍수(11·22·33·44)", lambda t: bool(d[t] & TWINS)),
+        ("구조", "쌍수 2개 이상", lambda t: len(d[t] & TWINS) >= 2),
+        ("구조", "연번(2연속)", lambda t: _has_run(d[t], 2)),
+        ("구조", "3연번", lambda t: _has_run(d[t], 3)),
+        ("구조", "연번 2쌍 이상", lambda t: sum(1 for x in d[t] if x + 1 in d[t]) >= 2),
+        ("구조", "거울수 쌍(12↔21 등 동시)", lambda t: any(a in d[t] and b in d[t] for a, b in MIRROR_PAIRS)),
+        ("구조", "거울수 이월(전회 번호의 거울수)", lambda t: any(MIRROR_MAP.get(x) in d[t] for x in prev(t))),
+        ("구조", "이월수 1개 이상", lambda t: bool(d[t] & prev(t))),
+        ("구조", "이월수 2개 이상", lambda t: len(d[t] & prev(t)) >= 2),
+        ("구조", "이웃수(전회 번호 ±1)", lambda t: any(x - 1 in d[t] or x + 1 in d[t] for x in prev(t))),
+        ("구조", "전회 보너스 → 당첨", lambda t: bonus.get(t - 1) in d[t]),
+        ("구조", "동끝수 3개 이상", lambda t: max(ld(t).values()) >= 3),
+        ("구조", "동끝수 2쌍 이상", lambda t: sum(1 for v in ld(t).values() if v >= 2) >= 2),
+        ("구조", "홀짝 극단(홀 0~1·5~6개)", lambda t: sum(x % 2 for x in d[t]) in (0, 1, 5, 6)),
+        ("구조", "고저 극단(≤22가 0~1·5~6개)", lambda t: sum(x <= 22 for x in d[t]) in (0, 1, 5, 6)),
+        ("구조", "소수 3개 이상", lambda t: len(d[t] & PRIMES) >= 3),
+        ("구조", "합계 100 미만", lambda t: sum(d[t]) < 100),
+        ("구조", "합계 176 이상", lambda t: sum(d[t]) >= 176),
+        ("구조", "멸구간 2개 이상", lambda t: sum(_band_cnt(d[t], lo, hi) == 0 for _, lo, hi in BANDS) >= 2),
+    ]
+    for nm, lo, hi in BANDS:
+        ev.append(("번호대", f"{nm} 출현", lambda t, lo=lo, hi=hi: _band_cnt(d[t], lo, hi) >= 1))
+    for nm, lo, hi in BANDS:
+        ev.append(("번호대", f"{nm} 3개 이상", lambda t, lo=lo, hi=hi: _band_cnt(d[t], lo, hi) >= 3))
+    for k in range(10):
+        ev.append(("끝수", f"끝수 {k} 출현", lambda t, k=k: any(x % 10 == k for x in d[t])))
+    return ev
+
+
+def _streak_stats(series):
+    """series(회차순 bool) → (hz {미출현길이 k: [다음회차 출현, 표본]}, 현재 미출현, 미출현 구간 길이 목록)."""
+    hz, s = {}, 0
+    for i in range(len(series) - 1):
+        s = 0 if series[i] else s + 1
+        v = hz.setdefault(s, [0, 0])
+        v[1] += 1
+        v[0] += series[i + 1]
+    cur = 0
+    for x in reversed(series):
+        if x:
+            break
+        cur += 1
+    runs, r = [], 0
+    for x in series:
+        if x:
+            if r:
+                runs.append(r)
+            r = 0
+        else:
+            r += 1
+    return hz, cur, runs
+
+
+def _hazard_at(hz, k):
+    """미출현 k회 뒤 다음 회차 출현 확률. 표본이 TIMING_MIN_N 미만이면 '≥k'로 넓히고,
+    그래도 부족하면 기준 k를 낮춰 표본을 확보한다. 반환 (확률, 표본, 근거 문자열)."""
+    hit, n = hz.get(k, [0, 0])
+    if n >= TIMING_MIN_N:
+        return hit / n, n, f"{k}회"
+    kk = k
+    while kk >= 0:
+        hit = sum(v[0] for j, v in hz.items() if j >= kk)
+        n = sum(v[1] for j, v in hz.items() if j >= kk)
+        if n >= TIMING_MIN_N:
+            return hit / n, n, f"{kk}회+"
+        kk -= 1
+    return 0.0, 0, "-"
+
+
+def _verdict(lift, n, cur, longest, p=1.0):
+    if p < 0.03:  # 평소 출현율 3% 미만 희귀 패턴은 타이밍 판정에서 제외(표본 부족)
+        return "희귀"
+    if longest and cur >= longest:
+        return "기록경신"
+    if n >= 20 and lift >= 1.2:
+        return "◎ 타이밍"
+    if lift >= 1.05 or (longest and cur >= 0.8 * longest):
+        return "○ 관심"
+    if lift < 0.9:
+        return "▽ 쉬어감"
+    return "△ 보통"
+
+
+def calc_timing(draws, bonus, base_no):
+    """패턴별 타이밍 통계 (2회~base_no회). 반환 rows:
+    (구분, 이름, 출현율, 평균미출현, 최장미출현, 현재미출현, 확률, 표본, 근거, 기준대비, 판정, hz)"""
+    ts = [t for t in sorted(draws) if 2 <= t <= base_no]
+    rows = []
+    for g, name, f in timing_events(draws, bonus):
+        ser = [f(t) for t in ts]
+        p = sum(ser) / len(ser)
+        hz, cur, runs = _streak_stats(ser)
+        prob, n, basis = _hazard_at(hz, cur)
+        lift = prob / p if p else 0
+        longest = max(runs) if runs else 0
+        avg = sum(runs) / len(runs) if runs else 0
+        rows.append((g, name, p, avg, longest, cur, prob, n, basis, lift,
+                     _verdict(lift, n, cur, longest, p), hz))
+    return rows
+
+
+def backtest_timing(draws, bonus, base_no, weeks=100):
+    """최근 weeks회 동안 매 회차 그 시점까지의 데이터만으로 '◎ 타이밍' 패턴을 고르고,
+    다음 회차 실제 출현률을 그 패턴들의 평소 출현율(기대치)과 비교."""
+    ts = [t for t in sorted(draws) if 2 <= t <= base_no]
+    evs = timing_events(draws, bonus)
+    full = [[f(t) for t in ts] for _, _, f in evs]
+    picks = hits = 0
+    expect = 0.0
+    for end in range(len(ts) - weeks, len(ts)):
+        for ser in full:
+            pre = ser[:end]  # ts[end-1]회까지
+            p = sum(pre) / len(pre)
+            hz, cur, runs = _streak_stats(pre)
+            prob, n, _ = _hazard_at(hz, cur)
+            lift = prob / p if p else 0
+            longest = max(runs) if runs else 0
+            if _verdict(lift, n, cur, longest, p) == "◎ 타이밍":
+                picks += 1
+                hits += ser[end]
+                expect += p
+    return picks, hits, expect
 
 
 # ── 2) OOXML 조각 ─────────────────────────────────────────────────────────
@@ -974,6 +1130,152 @@ def slide_carry_draws(ev, rows, base_no, next_no, latest_carry):
     return wrap_slide(sh)
 
 
+VERDICT_STYLE = {"◎ 타이밍": ("C00000", "FCE4E4"), "기록경신": ("7030A0", "EDE2F6"),
+                 "○ 관심": ("BF8F00", "FFF2CC"), "△ 보통": ("595959", None), "▽ 쉬어감": ("808080", "F2F2F2"),
+                 "희귀": ("A6A6A6", None)}
+
+
+def slides_timing(rows, base_no, next_no):
+    """패턴별 타이밍 표 (2페이지)."""
+    half = (len(rows) + 1) // 2
+    pages = [rows[:half], rows[half:]]
+    cols = [650000, 2550000, 800000, 900000, 900000, 900000, 1750000, 800000, 1000000]
+    bx = (W - sum(cols)) // 2
+    out = []
+    for pi, blk in enumerate(pages):
+        sh, fid = [], 2
+        sh.append(textbox(fid, "title", 400000, 200000, W - 800000, 650000,
+                          run(f"타이밍 통계 — 패턴별 미출현 기간과 {next_no}회 출현 확률  ({pi + 1}/2)",
+                              2000, HDR, True))); fid += 1
+        sh.append(textbox(fid, "sub", 400000, 800000, W - 800000, 400000,
+                          run(f"2~{base_no}회 실측 · 현재 미출현 = {base_no}회 기준 연속 미출현 회차(0 = {base_no}회에 출현) · "
+                              f"다음회차 확률 = 과거 같은 미출현 길이 뒤 실제 출현 비율(근거: 미출현 길이·표본) · "
+                              f"기준대비 = 평소 출현율 대비 배수", 1000, "808080"))); fid += 1
+        trows = [hdr_cells(["구분", "패턴", "출현율", "평균 미출현", "최장 미출현", "현재 미출현",
+                            "다음회차 확률(근거)", "기준대비", "판정"], sz=850)]
+        for g, name, p, avg, longest, cur, prob, n, basis, lift, vd, _ in blk:
+            fc, fill = VERDICT_STYLE[vd]
+            near = longest and cur >= 0.8 * longest
+            trows.append([
+                {"t": g, "sz": 800, "font": "808080"},
+                {"t": name, "sz": 800, "algn": "l", "bold": vd in ("◎ 타이밍", "기록경신")},
+                {"t": f"{p * 100:.1f}%", "sz": 800},
+                {"t": f"{avg:.1f}", "sz": 800},
+                {"t": f"{longest}", "sz": 800},
+                {"t": f"{cur}", "sz": 850, "bold": cur > avg,
+                 "font": "C00000" if near else ("1F3864" if cur > avg else "333333")},
+                {"t": f"{prob * 100:.1f}% ({basis}·{n})" if n else "표본 없음", "sz": 800},
+                {"t": f"{lift:.2f}", "sz": 800, "bold": lift >= 1.2,
+                 "font": "C00000" if lift >= 1.2 else ("808080" if lift < 0.9 else "333333")},
+                {"t": vd, "sz": 800, "bold": True, "font": fc, "fill": fill},
+            ])
+        sh.append(gtable(fid, f"tm{pi}", bx, 1300000, cols, trows, row_h=210000)); fid += 1
+        foot = ("※ 판정: ◎ 기준대비 1.2배↑(표본 20↑) · ○ 1.05배↑ 또는 최장 미출현의 80%↑ · △ 보통 · ▽ 0.9배 미만 · "
+                "기록경신 = 현재 미출현이 역대 최장 이상 · 희귀 = 평소 3% 미만(판정 제외). 현재 미출현이 빨강 = 최장의 80% 이상.")
+        sh.append(textbox(fid, "foot", 400000, H - 540000, W - 800000, 440000,
+                          run(foot, 950, "A6A6A6"))); fid += 1
+        out.append(wrap_slide(sh))
+    return out
+
+
+TIMING_CURVE_KEYS = ["쌍수(11·22·33·44)", "연번(2연속)", "거울수 쌍(12↔21 등 동시)", "거울수 이월(전회 번호의 거울수)",
+                     "이월수 1개 이상", "이월수 2개 이상", "동끝수 3개 이상", "40번대(41-45) 출현",
+                     "합계 100 미만", "합계 176 이상", "전회 보너스 → 당첨"]
+
+
+def slide_timing_curve(rows, base_no):
+    """주요 패턴: 미출현 0~9회·10회+ 뒤 다음 회차 출현 확률 표. 현재 미출현 칸 강조."""
+    by = {r[1]: r for r in rows}
+    ks = list(range(10))
+    cols = [2600000] + [760000] * 10 + [900000]
+    bx = (W - sum(cols)) // 2
+    sh, fid = [], 2
+    sh.append(textbox(fid, "title", 400000, 200000, W - 800000, 650000,
+                      run("미출현 기간별 다음 회차 출현 확률 — \"몇 회 안 나오면 다음에 나오나\"", 2000, HDR, True))); fid += 1
+    sh.append(textbox(fid, "sub", 400000, 800000, W - 800000, 400000,
+                      run(f"2~{base_no}회 실측 · 칸 = k회 연속 미출현 뒤 다음 회차 출현 비율(표본 15 미만은 회색) · "
+                          f"노랑 테두리 칸 = {base_no}회 기준 현재 위치 · 맨 오른쪽 = 평소 출현율", 1000, "808080"))); fid += 1
+    trows = [hdr_cells(["패턴"] + [f"{k}회" for k in ks] + ["10회+", "평소"], sz=850)]
+    for key in TIMING_CURVE_KEYS:
+        r = by.get(key)
+        if not r:
+            continue
+        _, name, p, _, _, cur, _, _, _, _, _, hz = r
+        row = [{"t": name, "sz": 800, "algn": "l", "bold": True}]
+        for k in ks + [10]:
+            if k < 10:
+                hit, n = hz.get(k, [0, 0])
+            else:
+                hit = sum(v[0] for j, v in hz.items() if j >= 10)
+                n = sum(v[1] for j, v in hz.items() if j >= 10)
+            here = (cur == k) or (k == 10 and cur >= 10)
+            if n == 0:
+                c = {"t": "-", "sz": 750, "font": "C0C0C0"}
+            else:
+                pr = hit / n
+                c = {"t": f"{pr * 100:.0f}%", "sz": 800,
+                     "font": "C0C0C0" if n < TIMING_MIN_N else ("C00000" if pr >= p * 1.2 else
+                                                                 ("808080" if pr < p * 0.9 else "333333")),
+                     "bold": pr >= p * 1.2 and n >= TIMING_MIN_N}
+            if here:
+                c["fill"] = "FFF2CC"
+                c["bold"] = True
+            row.append(c)
+        row.append({"t": f"{p * 100:.0f}%", "sz": 800, "font": HDR, "bold": True})
+        trows.append(row)
+    sh.append(gtable(fid, "tc", bx, 1350000, cols, trows, row_h=330000)); fid += 1
+    foot = ("※ 빨강 = 평소보다 1.2배↑, 회색 글자 = 평소의 0.9배 미만 또는 표본 부족. "
+            "독립 추첨이라면 모든 칸이 '평소' 근처여야 하며, 차이는 대부분 표본 흔들림입니다.")
+    sh.append(textbox(fid, "foot", 400000, H - 540000, W - 800000, 440000,
+                      run(foot, 1000, "A6A6A6"))); fid += 1
+    return wrap_slide(sh)
+
+
+def slide_timing_summary(rows, base_no, next_no, bt):
+    """다음 회차 타이밍 요약: 나올 타이밍(◎·기록경신·○) / 쉬어갈 패턴(▽) + 백테스트."""
+    order = {"기록경신": 0, "◎ 타이밍": 1, "○ 관심": 2}
+    hot = sorted([r for r in rows if r[10] in order], key=lambda r: (order[r[10]], -r[9]))[:12]
+    cold = sorted([r for r in rows if r[10] == "▽ 쉬어감"], key=lambda r: r[9])[:12]
+    sh, fid = [], 2
+    sh.append(textbox(fid, "title", 400000, 200000, W - 800000, 650000,
+                      run(f"{next_no}회차 타이밍 요약 — 나올 타이밍 vs 쉬어갈 패턴", 2000, HDR, True))); fid += 1
+    sh.append(textbox(fid, "sub", 400000, 800000, W - 800000, 400000,
+                      run(f"{base_no}회까지의 미출현 기간 기준 · 확률 = 과거 같은 미출현 길이 뒤 실제 출현 비율", 1100, "808080"))); fid += 1
+    cols = [2550000, 700000, 1000000, 800000, 900000]
+    gap = 350000
+    bx = (W - 2 * sum(cols) - gap) // 2
+    for side, (lst, label, color) in enumerate([(hot, "나올 타이밍", "C00000"), (cold, "쉬어갈 패턴", "808080")]):
+        x = bx + side * (sum(cols) + gap)
+        sh.append(textbox(fid, f"lbl{side}", x, 1230000, sum(cols), 330000,
+                          run(label, 1400, color, True))); fid += 1
+        trows = [hdr_cells(["패턴", "현재", "다음회차", "평소", "판정"], sz=850)]
+        for _, name, p, avg, longest, cur, prob, n, basis, lift, vd, _ in lst:
+            fc, fill = VERDICT_STYLE[vd]
+            trows.append([
+                {"t": name, "sz": 800, "algn": "l", "bold": True},
+                {"t": f"{cur}회", "sz": 800},
+                {"t": f"{prob * 100:.1f}%", "sz": 850, "bold": True, "font": fc},
+                {"t": f"{p * 100:.1f}%", "sz": 800, "font": "808080"},
+                {"t": vd, "sz": 800, "bold": True, "font": fc, "fill": fill},
+            ])
+        if len(trows) == 1:
+            trows.append([{"t": "해당 없음", "sz": 800, "font": "808080"}] + [{"t": ""} for _ in range(4)])
+        sh.append(gtable(fid, f"ts{side}", x, 1580000, cols, trows, row_h=270000)); fid += 1
+    picks, hits, expect = bt
+    if picks:
+        btxt = (f"백테스트(최근 100회, 각 시점 데이터만 사용): '◎ 타이밍' 선정 {picks}건 중 다음 회차 실제 출현 {hits}건 "
+                f"({hits / picks * 100:.1f}%) · 같은 패턴들의 평소 출현율 기준 기대 {expect:.1f}건 "
+                f"({expect / picks * 100:.1f}%) → 실제/기대 {hits / expect:.2f}배")
+    else:
+        btxt = "백테스트(최근 100회): '◎ 타이밍' 선정 사례 없음"
+    sh.append(textbox(fid, "bt", 400000, H - 900000, W - 800000, 380000,
+                      run(btxt, 1050, "1F3864", True))); fid += 1
+    sh.append(textbox(fid, "foot", 400000, H - 520000, W - 800000, 420000,
+                      run("※ 로또는 독립 추첨이라 '오래 안 나왔으니 나온다'는 보장되지 않습니다. 실측 경향을 보는 참고용 통계.",
+                          1000, "A6A6A6"))); fid += 1
+    return wrap_slide(sh)
+
+
 # ── 4) 정적 패키지 파트 ────────────────────────────────────────────────────
 def content_types(n_slides):
     slides = "".join(
@@ -1196,6 +1498,14 @@ def main():
         if base in bonus:
             slides += [slide_follow_apply(bstats, base, {bonus[base]}, r["next_no"], mode="bonus")]
         print(f"보너스통계: 다음회차 당첨 {bhit}/{len(pairs)} / {base}회 보너스 {bonus.get(base)}")
+
+        # 타이밍 통계: 패턴별 미출현 기간 → 다음 회차 출현 확률
+        trows = calc_timing(draws, bonus, base)
+        bt = backtest_timing(draws, bonus, base)
+        slides += [slide_timing_summary(trows, base, r["next_no"], bt)]
+        slides += slides_timing(trows, base, r["next_no"])
+        slides += [slide_timing_curve(trows, base)]
+        print(f"타이밍: {len(trows)}패턴 / 백테스트 ◎ {bt[1]}/{bt[0]} (기대 {bt[2]:.1f})")
 
     parts = {
         "[Content_Types].xml": content_types(len(slides)),
